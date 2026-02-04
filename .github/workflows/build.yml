@@ -7,6 +7,7 @@ on:
   workflow_dispatch:
 
 env:
+  AWS_REGION: ap-northeast-1
   REGISTRY: 294354037686.dkr.ecr.ap-northeast-1.amazonaws.com
   IMAGE: moonbeam-x
   DOCKERFILE: docker/moonbeam.Dockerfile

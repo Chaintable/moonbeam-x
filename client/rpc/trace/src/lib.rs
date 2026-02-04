@@ -14,7 +14,7 @@
 // You should have received a copy of the GNU General Public License
 // along with Moonbeam.  If not, see <http://www.gnu.org/licenses/>.
 
-//! `trace_filter` RPC handler and its associated service task.
+//! `trace_filter` and `trace_debankBlock` RPC handlers and associated service tasks.
 //! The RPC handler rely on `CacheTask` which provides a future that must be run inside a tokio
 //! executor.
 //!
@@ -23,6 +23,8 @@
 //! - A main `CacheTask` managing the cache and the communication between tasks.
 //! - For each traced block an async task responsible to wait for a permit, spawn a blocking
 //!   task and waiting for the result, then send it to the main `CacheTask`.
+
+pub mod debank;
 
 use futures::{select, FutureExt};
 use std::{
@@ -45,21 +47,53 @@ use sp_block_builder::BlockBuilder;
 use sp_blockchain::{
 	Backend as BlockchainBackend, Error as BlockChainError, HeaderBackend, HeaderMetadata,
 };
+use sp_core::keccak_256;
 use sp_runtime::traits::{BlakeTwo256, Block as BlockT, Header as HeaderT};
 use substrate_prometheus_endpoint::Registry as PrometheusRegistry;
 
-use ethereum_types::H256;
-use fc_rpc::lru_cache::LRUCacheByteLimited;
+use ethereum_types::{H160, H256};
+use fc_rpc::{lru_cache::LRUCacheByteLimited, Eth, EthConfig};
+use fc_rpc_core::types::{BlockNumberOrHash, BlockTransactions, Receipt, RichBlock, Transaction};
 use fc_storage::StorageOverride;
 use fp_rpc::EthereumRuntimeRPCApi;
+use jsonrpsee::core::RpcResult;
+
+/// Trait for providing block data from EthApi.
+/// This abstracts over EthApi to allow Trace to get data without complex generics.
+#[async_trait::async_trait]
+pub trait EthDataProvider: Send + Sync {
+	/// Get all transaction receipts for a block.
+	async fn block_transaction_receipts(
+		&self,
+		number_or_hash: BlockNumberOrHash,
+	) -> RpcResult<Option<Vec<Receipt>>>;
+
+	/// Get block with full transaction details.
+	async fn block_by_number(
+		&self,
+		number_or_hash: BlockNumberOrHash,
+		full: bool,
+	) -> RpcResult<Option<RichBlock>>;
+}
 
 use moonbeam_client_evm_tracing::{
 	formatters::ResponseFormatter,
 	types::block::{self, TransactionTrace},
 };
 pub use moonbeam_rpc_core_trace::{FilterRequest, TraceServer};
-use moonbeam_rpc_core_types::{RequestBlockId, RequestBlockTag};
+use moonbeam_rpc_core_types::{
+	debank::{
+		BlockFile, DebankBlock, DebankBlockHeader, DebankEvent as RpcDebankEvent, DebankOutput,
+		DebankTrace as RpcDebankTrace, DebankTransaction,
+	},
+	RequestBlockId, RequestBlockTag,
+};
 use moonbeam_rpc_primitives_debug::DebugRuntimeApi;
+
+// Import Debank listener and formatter for direct tracing
+use moonbeam_client_evm_tracing::{
+	formatters::debank::Formatter as DebankFormatter, listeners::debank::Listener as DebankListener,
+};
 
 /// Internal type for trace results from blocking tasks
 type TxsTraceRes = Result<Vec<TransactionTrace>, String>;
@@ -76,19 +110,25 @@ const CACHE_LOG_TARGET: &str = "trace-cache";
 const TRACING_TIMEOUT_SECS: u64 = 60;
 
 /// RPC handler. Will communicate with a `CacheTask` through a `CacheRequester`.
-pub struct Trace<B, C> {
-	_phantom: PhantomData<B>,
+pub struct Trace<B, C, BE> {
+	_phantom: PhantomData<(B, BE)>,
 	client: Arc<C>,
+	backend: Arc<BE>,
+	overrides: Arc<dyn StorageOverride<B>>,
+	eth_data_provider: Arc<dyn EthDataProvider>,
 	requester: CacheRequester,
 	max_count: u32,
 	max_block_range: u32,
 }
 
-impl<B, C> Clone for Trace<B, C> {
+impl<B, C, BE> Clone for Trace<B, C, BE> {
 	fn clone(&self) -> Self {
 		Self {
 			_phantom: PhantomData,
 			client: Arc::clone(&self.client),
+			backend: Arc::clone(&self.backend),
+			overrides: Arc::clone(&self.overrides),
+			eth_data_provider: Arc::clone(&self.eth_data_provider),
 			requester: self.requester.clone(),
 			max_count: self.max_count,
 			max_block_range: self.max_block_range,
@@ -96,22 +136,29 @@ impl<B, C> Clone for Trace<B, C> {
 	}
 }
 
-impl<B, C> Trace<B, C>
+impl<B, C, BE> Trace<B, C, BE>
 where
 	B: BlockT<Hash = H256> + Send + Sync + 'static,
 	B::Header: HeaderT<Number = u32>,
 	C: HeaderMetadata<B, Error = BlockChainError> + HeaderBackend<B>,
 	C: Send + Sync + 'static,
+	BE: Send + Sync + 'static,
 {
 	/// Create a new RPC handler.
 	pub fn new(
 		client: Arc<C>,
+		backend: Arc<BE>,
+		overrides: Arc<dyn StorageOverride<B>>,
+		eth_data_provider: Arc<dyn EthDataProvider>,
 		requester: CacheRequester,
 		max_count: u32,
 		max_block_range: u32,
 	) -> Self {
 		Self {
 			client,
+			backend,
+			overrides,
+			eth_data_provider,
 			requester,
 			max_count,
 			max_block_range,
@@ -262,13 +309,466 @@ where
 	}
 }
 
-#[jsonrpsee::core::async_trait]
-impl<B, C> TraceServer for Trace<B, C>
+impl<B, C, BE> Trace<B, C, BE>
 where
+	BE: Backend<B> + 'static,
+	BE::State: StateBackend<BlakeTwo256>,
 	B: BlockT<Hash = H256> + Send + Sync + 'static,
 	B::Header: HeaderT<Number = u32>,
+	C: ProvideRuntimeApi<B>,
+	C: StorageProvider<B, BE>,
 	C: HeaderMetadata<B, Error = BlockChainError> + HeaderBackend<B>,
 	C: Send + Sync + 'static,
+	C::Api: BlockBuilder<B>,
+	C::Api: DebugRuntimeApi<B>,
+	C::Api: EthereumRuntimeRPCApi<B>,
+	C::Api: ApiExt<B>,
+{
+	/// Implementation of trace_debankBlock.
+	async fn trace_debank_block(self, block_id: RequestBlockId) -> Result<DebankOutput, String> {
+		// Convert block ID to block height
+		let block_height = match block_id {
+			RequestBlockId::Number(n) => n,
+			RequestBlockId::Tag(RequestBlockTag::Latest) => self.client.info().best_number,
+			RequestBlockId::Tag(RequestBlockTag::Earliest) => 0,
+			RequestBlockId::Tag(RequestBlockTag::Finalized) => self.client.info().finalized_number,
+			RequestBlockId::Tag(RequestBlockTag::Pending) => {
+				return Err("'pending' is not supported".to_string());
+			}
+			RequestBlockId::Hash(hash) => {
+				// Look up block number from hash
+				self.client
+					.number(hash)
+					.map_err(|e| format!("Failed to get block number: {:?}", e))?
+					.ok_or_else(|| format!("Block with hash {:?} not found", hash))?
+			}
+		};
+
+		// Get substrate block hash
+		let substrate_hash = self
+			.client
+			.hash(block_height)
+			.map_err(|e| format!("Error when fetching block {} hash: {:?}", block_height, e))?
+			.ok_or_else(|| format!("Block with height {} doesn't exist", block_height))?;
+
+		// Get Ethereum block data
+		let eth_block = self
+			.overrides
+			.current_block(substrate_hash)
+			.ok_or_else(|| {
+				format!(
+					"Failed to get Ethereum block data for block {}",
+					block_height
+				)
+			})?;
+
+		// Get block with full transaction details and receipts using EthDataProvider
+		let block_num = BlockNumberOrHash::Num(block_height.into());
+		let rpc_block = self
+			.eth_data_provider
+			.block_by_number(block_num.clone(), true)
+			.await
+			.map_err(|e| format!("Failed to get block: {:?}", e))?
+			.ok_or_else(|| format!("Block {} not found via EthApi", block_height))?;
+
+		let rpc_receipts = self
+			.eth_data_provider
+			.block_transaction_receipts(block_num)
+			.await
+			.map_err(|e| format!("Failed to get receipts: {:?}", e))?
+			.unwrap_or_default();
+
+		// Extract transactions from RichBlock
+		let rpc_transactions: Vec<Transaction> = match rpc_block.inner.transactions {
+			BlockTransactions::Full(txs) => txs,
+			BlockTransactions::Hashes(_) => {
+				return Err("Expected full transactions but got hashes".to_string());
+			}
+		};
+
+		let eth_block_hash = eth_block.header.hash();
+		let process_start_timestamp = std::time::SystemTime::now()
+			.duration_since(std::time::UNIX_EPOCH)
+			.map(|d| d.as_secs())
+			.unwrap_or(0);
+
+		// Build DebankBlock
+		// Note: ethereum::Header doesn't have base_fee_per_gas field, it can be obtained from
+		// runtime API if needed. For now, we set it to None.
+		let debank_block = DebankBlock {
+			id: eth_block_hash,
+			height: block_height as u64,
+			parent_id: eth_block.header.parent_hash,
+			base_fee_per_gas: None, // TODO: Can be obtained from Runtime API if needed
+			miner: eth_block.header.beneficiary,
+			gas_limit: eth_block.header.gas_limit.as_u64(),
+			gas_used: eth_block.header.gas_used.as_u64(),
+			timestamp: eth_block.header.timestamp,
+			process_start_timestamp,
+		};
+
+		// Build DebankBlockHeader
+		let debank_header = DebankBlockHeader {
+			parent_hash: eth_block.header.parent_hash,
+			sha3_uncles: eth_block.header.ommers_hash,
+			miner: eth_block.header.beneficiary,
+			state_root: eth_block.header.state_root,
+			transactions_root: eth_block.header.transactions_root,
+			receipts_root: eth_block.header.receipts_root,
+			logs_bloom: eth_block.header.logs_bloom.0.to_vec(),
+			difficulty: eth_block.header.difficulty,
+			number: block_height as u64,
+			gas_limit: eth_block.header.gas_limit.as_u64(),
+			gas_used: eth_block.header.gas_used.as_u64(),
+			timestamp: eth_block.header.timestamp,
+			extra_data: eth_block.header.extra_data.clone(),
+			mix_hash: eth_block.header.mix_hash,
+			nonce: {
+				let nonce_bytes = eth_block.header.nonce.0;
+				u64::from_be_bytes(nonce_bytes)
+			},
+			base_fee_per_gas: None, // TODO: Can be obtained from Runtime API if needed
+			hash: eth_block_hash,
+		};
+
+		// Build DebankTransactions using EthApi's Transaction type
+		// This provides all fields already correctly computed (gas_price for EIP-1559, etc.)
+		let mut debank_txs: Vec<DebankTransaction> = Vec::new();
+		for (idx, rpc_tx) in rpc_transactions.iter().enumerate() {
+			// Get gas_used and status from RPC receipt (already correctly calculated by EthApi)
+			let (gas_used, tx_status) = rpc_receipts
+				.get(idx)
+				.map(|receipt| {
+					let gas = receipt.gas_used.map(|g| g.as_u64()).unwrap_or(0);
+					let status = receipt
+						.status_code
+						.map(|s| s.as_u64() == 1)
+						.unwrap_or(false);
+					(gas, status)
+				})
+				.unwrap_or((0, false));
+
+			let debank_tx = DebankTransaction {
+				id: rpc_tx.hash,
+				from: rpc_tx.from,
+				to: rpc_tx.to.unwrap_or_default(),
+				gas_limit: rpc_tx.gas.as_u64(),
+				gas_price: rpc_tx.gas_price.map(|p| p.as_u128()).unwrap_or(0),
+				gas_used,
+				status: tx_status,
+				gas_fee_cap: rpc_tx
+					.max_fee_per_gas
+					.map(|f| f.as_u128())
+					.unwrap_or_else(|| rpc_tx.gas_price.map(|p| p.as_u128()).unwrap_or(0)),
+				gas_tip_cap: rpc_tx
+					.max_priority_fee_per_gas
+					.map(|f| f.as_u128())
+					.unwrap_or(0),
+				input: rpc_tx.input.0.clone(),
+				nonce: rpc_tx.nonce.as_u64(),
+				transaction_index: rpc_tx.transaction_index.map(|i| i.as_u64()).unwrap_or(idx as u64),
+				value: rpc_tx.value,
+			};
+			debank_txs.push(debank_tx);
+		}
+
+		// For genesis block, return early with empty traces
+		if block_height == 0 {
+			let state_diff =
+				debank::state_diff::empty_state_diff(eth_block.header.state_root, H256::zero());
+			let block_file = BlockFile {
+				block: debank_block,
+				transactions: debank_txs,
+				events: Vec::new(),
+				traces: Vec::new(),
+				error_events: Vec::new(),
+				error_traces: Vec::new(),
+				storage_contracts: Vec::new(),
+			};
+			let validation_hash = block_file.validation().validation_hash;
+			return Ok(DebankOutput {
+				block_file,
+				header: debank_header,
+				state_diff: debank::state_diff::encode_state_diff(&state_diff),
+				validation_hash,
+			});
+		}
+
+		// Get tx hashes for formatting (using rpc_transactions from EthApi)
+		let tx_hashes: Vec<H256> = rpc_transactions.iter().map(|tx| tx.hash).collect();
+		let parent_hash = eth_block.header.parent_hash;
+
+		// Use the new Debank listener to trace the block directly
+		let client = Arc::clone(&self.client);
+		let backend = Arc::clone(&self.backend);
+		let overrides = Arc::clone(&self.overrides);
+
+		// Trace the block and format output (including account info queries) in blocking task
+		let formatted = tokio::task::spawn_blocking(move || {
+			Self::trace_debank_block_sync(
+				client,
+				backend,
+				substrate_hash,
+				overrides,
+				eth_block_hash,
+				parent_hash,
+				tx_hashes,
+			)
+		})
+		.await
+		.map_err(|e| format!("Failed to spawn blocking task: {:?}", e))?
+		.map_err(|e| format!("Failed to trace block: {}", e))?;
+
+		// Convert formatter output to RPC output types
+		let all_traces: Vec<RpcDebankTrace> = formatted
+			.traces
+			.into_iter()
+			.map(|t| RpcDebankTrace {
+				id: t.id,
+				from_addr: t.from_addr,
+				gas_limit: t.gas_limit,
+				input: t.input,
+				to_addr: t.to_addr,
+				value: t.value,
+				gas_used: t.gas_used,
+				output: t.output,
+				call_create_type: t.call_create_type,
+				call_type: t.call_type,
+				tx_id: t.tx_id,
+				parent_trace_id: t.parent_trace_id,
+				pos_in_parent_trace: t.pos_in_parent_trace,
+				self_storage_change: t.self_storage_change,
+				storage_change: t.storage_change,
+				subtraces: t.subtraces,
+				trace_address: t.trace_address,
+				error: t.error,
+			})
+			.collect();
+
+		let all_error_traces: Vec<RpcDebankTrace> = formatted
+			.error_traces
+			.into_iter()
+			.map(|t| RpcDebankTrace {
+				id: t.id,
+				from_addr: t.from_addr,
+				gas_limit: t.gas_limit,
+				input: t.input,
+				to_addr: t.to_addr,
+				value: t.value,
+				gas_used: t.gas_used,
+				output: t.output,
+				call_create_type: t.call_create_type,
+				call_type: t.call_type,
+				tx_id: t.tx_id,
+				parent_trace_id: t.parent_trace_id,
+				pos_in_parent_trace: t.pos_in_parent_trace,
+				self_storage_change: t.self_storage_change,
+				storage_change: t.storage_change,
+				subtraces: t.subtraces,
+				trace_address: t.trace_address,
+				error: t.error,
+			})
+			.collect();
+
+		let all_events: Vec<RpcDebankEvent> = formatted
+			.events
+			.into_iter()
+			.map(|e| RpcDebankEvent {
+				id: e.id,
+				contract_id: e.contract_id,
+				selector: e.selector,
+				topics: e.topics,
+				data: e.data,
+				tx_id: e.tx_id,
+				parent_trace_id: e.parent_trace_id,
+				pos_in_parent_trace: e.pos_in_parent_trace,
+				idx: e.idx,
+			})
+			.collect();
+
+		let all_error_events: Vec<RpcDebankEvent> = formatted
+			.error_events
+			.into_iter()
+			.map(|e| RpcDebankEvent {
+				id: e.id,
+				contract_id: e.contract_id,
+				selector: e.selector,
+				topics: e.topics,
+				data: e.data,
+				tx_id: e.tx_id,
+				parent_trace_id: e.parent_trace_id,
+				pos_in_parent_trace: e.pos_in_parent_trace,
+				idx: e.idx,
+			})
+			.collect();
+
+		// Encode state diff using RLP
+		let state_diff_encoded = rlp::encode(&formatted.state_diff).to_vec();
+
+		let block_file = BlockFile {
+			block: debank_block,
+			transactions: debank_txs,
+			events: all_events,
+			traces: all_traces,
+			error_events: all_error_events,
+			error_traces: all_error_traces,
+			storage_contracts: formatted.storage_contracts,
+		};
+
+		let validation_hash = block_file.validation().validation_hash;
+
+		Ok(DebankOutput {
+			block_file,
+			header: debank_header,
+			state_diff: state_diff_encoded,
+			validation_hash,
+		})
+	}
+
+	/// Synchronous block tracing using the Debank listener.
+	/// Returns the formatted Debank output including account info for state diff.
+	fn trace_debank_block_sync(
+		client: Arc<C>,
+		backend: Arc<BE>,
+		substrate_hash: H256,
+		overrides: Arc<dyn StorageOverride<B>>,
+		eth_block_hash: H256,
+		parent_hash: H256,
+		tx_hashes: Vec<H256>,
+	) -> Result<moonbeam_client_evm_tracing::formatters::debank::DebankBlockOutput, String> {
+		let api = client.runtime_api();
+		let block_header = client
+			.header(substrate_hash)
+			.map_err(|e| format!("Error fetching block header: {:?}", e))?
+			.ok_or_else(|| format!("Block {} not found", substrate_hash))?;
+
+		let height = *block_header.number();
+		let substrate_parent_hash = *block_header.parent_hash();
+
+		// Get Ethereum block data
+		let eth_transactions = overrides
+			.current_transaction_statuses(substrate_hash)
+			.ok_or_else(|| format!("Failed to get transaction statuses for block {}", height))?;
+
+		let eth_tx_hashes: Vec<H256> = eth_transactions
+			.iter()
+			.map(|t| t.transaction_hash)
+			.collect();
+
+		// Get extrinsics
+		let extrinsics = backend
+			.blockchain()
+			.body(substrate_hash)
+			.map_err(|e| format!("Error fetching extrinsics: {:?}", e))?
+			.ok_or_else(|| format!("Block {} extrinsics not found", height))?;
+
+		// Get DebugRuntimeApi version
+		let trace_api_version = api
+			.api_version::<dyn DebugRuntimeApi<B>>(substrate_parent_hash)
+			.map_err(|_| "Runtime api version call failed".to_string())?
+			.ok_or_else(|| "DebugRuntimeApi not found".to_string())?;
+
+		// Create and use the Debank listener
+		let mut listener = DebankListener::new();
+
+		let f = || -> Result<_, String> {
+			let result = if trace_api_version >= 5 {
+				api.trace_block(
+					substrate_parent_hash,
+					extrinsics,
+					eth_tx_hashes,
+					&block_header,
+				)
+			} else {
+				// Get core runtime api version
+				let core_api_version = api
+					.api_version::<dyn sp_api::Core<B>>(substrate_parent_hash)
+					.map_err(|_| "Runtime api version call failed (core)".to_string())?
+					.ok_or_else(|| "Core API not found".to_string())?;
+
+				// Initialize block
+				if core_api_version >= 5 {
+					api.initialize_block(substrate_parent_hash, &block_header)
+						.map_err(|e| format!("Runtime api access error: {:?}", e))?;
+				} else {
+					#[allow(deprecated)]
+					api.initialize_block_before_version_5(substrate_parent_hash, &block_header)
+						.map_err(|e| format!("Runtime api access error: {:?}", e))?;
+				}
+
+				#[allow(deprecated)]
+				api.trace_block_before_version_5(substrate_parent_hash, extrinsics, eth_tx_hashes)
+			};
+
+			result
+				.map_err(|e| format!("Error replaying block {}: {:?}", height, e))?
+				.map_err(|e| format!("Internal error replaying block {}: {:?}", height, e))?;
+
+			Ok(())
+		};
+
+		listener.using(f)?;
+
+		// Finish the last transaction
+		listener.finish_transaction();
+
+		// Create account_info_fn that queries the Runtime API for account state
+		// Returns (NewAccount, code) tuple
+		let account_info_fn = |address: H160| -> Option<(
+			moonbeam_client_evm_tracing::types::block::NewAccount,
+			Vec<u8>,
+		)> {
+			// Get account basic info (balance, nonce) from Runtime API
+			let account = api.account_basic(substrate_hash, address).ok()?;
+
+			// Get account code
+			let code = overrides.account_code_at(substrate_hash, address).unwrap_or_default();
+
+			// Calculate code hash using keccak256
+			let code_hash = if code.is_empty() {
+				H256::from_slice(&keccak_256(&[]))
+			} else {
+				H256::from_slice(&keccak_256(&code))
+			};
+
+			let new_account = moonbeam_client_evm_tracing::types::block::NewAccount {
+				address,
+				balance: account.balance,
+				nonce: account.nonce.as_u64(),
+				code_hash,
+			};
+
+			Some((new_account, code))
+		};
+
+		// Format the listener output to Debank format
+		let formatted = DebankFormatter::format(
+			listener,
+			eth_block_hash,
+			parent_hash,
+			&tx_hashes,
+			account_info_fn,
+		);
+
+		Ok(formatted)
+	}
+}
+
+#[jsonrpsee::core::async_trait]
+impl<B, C, BE> TraceServer for Trace<B, C, BE>
+where
+	BE: Backend<B> + 'static,
+	BE::State: StateBackend<BlakeTwo256>,
+	B: BlockT<Hash = H256> + Send + Sync + 'static,
+	B::Header: HeaderT<Number = u32>,
+	C: ProvideRuntimeApi<B>,
+	C: StorageProvider<B, BE>,
+	C: HeaderMetadata<B, Error = BlockChainError> + HeaderBackend<B>,
+	C: Send + Sync + 'static,
+	C::Api: BlockBuilder<B>,
+	C::Api: DebugRuntimeApi<B>,
+	C::Api: EthereumRuntimeRPCApi<B>,
+	C::Api: ApiExt<B>,
 {
 	async fn filter(
 		&self,
@@ -276,6 +776,16 @@ where
 	) -> jsonrpsee::core::RpcResult<Vec<TransactionTrace>> {
 		self.clone()
 			.filter(filter)
+			.await
+			.map_err(fc_rpc::internal_err)
+	}
+
+	async fn debank_block(
+		&self,
+		block_id: RequestBlockId,
+	) -> jsonrpsee::core::RpcResult<DebankOutput> {
+		self.clone()
+			.trace_debank_block(block_id)
 			.await
 			.map_err(fc_rpc::internal_err)
 	}
@@ -933,5 +1443,35 @@ where
 				.collect();
 
 		Ok(traces)
+	}
+}
+
+// Implement EthDataProvider for Eth (EthApi)
+#[async_trait::async_trait]
+impl<B, C, P, CT, BE, CIDP, EC> EthDataProvider for Eth<B, C, P, CT, BE, CIDP, EC>
+where
+	B: BlockT,
+	C: ProvideRuntimeApi<B>,
+	C::Api: EthereumRuntimeRPCApi<B>,
+	C: HeaderBackend<B> + StorageProvider<B, BE> + 'static,
+	BE: Backend<B> + 'static,
+	P: sc_service::TransactionPool<Block = B, Hash = B::Hash> + 'static,
+	CT: Send + Sync + 'static,
+	CIDP: Send + Sync + 'static,
+	EC: EthConfig<B, C>,
+{
+	async fn block_transaction_receipts(
+		&self,
+		number_or_hash: BlockNumberOrHash,
+	) -> RpcResult<Option<Vec<Receipt>>> {
+		Eth::block_transaction_receipts(self, number_or_hash).await
+	}
+
+	async fn block_by_number(
+		&self,
+		number_or_hash: BlockNumberOrHash,
+		full: bool,
+	) -> RpcResult<Option<RichBlock>> {
+		Eth::block_by_number(self, number_or_hash, full).await
 	}
 }

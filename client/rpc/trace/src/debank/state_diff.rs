@@ -14,10 +14,24 @@
 // You should have received a copy of the GNU General Public License
 // along with Moonbeam.  If not, see <http://www.gnu.org/licenses/>.
 
-pub mod call_list;
-pub mod debank;
-pub mod raw;
+//! State diff computation for Debank trace output.
 
-pub use call_list::Listener as CallList;
-pub use debank::Listener as Debank;
-pub use raw::Listener as Raw;
+use super::types::BlockStorageDiff;
+use ethereum_types::H256;
+
+/// Create an empty state diff (for blocks with no state changes or genesis).
+pub fn empty_state_diff(block_hash: H256, parent_hash: H256) -> BlockStorageDiff {
+	BlockStorageDiff {
+		hash: block_hash,
+		parent_hash,
+		new_accounts: Vec::new(),
+		deleted_accounts: Vec::new(),
+		storage_diff: Vec::new(),
+		new_codes: Vec::new(),
+	}
+}
+
+/// Encode a BlockStorageDiff using RLP for inclusion in DebankOutput.
+pub fn encode_state_diff(state_diff: &BlockStorageDiff) -> Vec<u8> {
+	rlp::encode(state_diff).to_vec()
+}

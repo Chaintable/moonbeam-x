@@ -17,7 +17,7 @@
 use ethereum_types::H160;
 use jsonrpsee::{core::RpcResult, proc_macros::rpc};
 use moonbeam_client_evm_tracing::types::block::TransactionTrace;
-use moonbeam_rpc_core_types::RequestBlockId;
+use moonbeam_rpc_core_types::{debank::DebankOutput, RequestBlockId};
 use serde::Deserialize;
 
 #[rpc(server)]
@@ -25,6 +25,10 @@ use serde::Deserialize;
 pub trait Trace {
 	#[method(name = "trace_filter")]
 	async fn filter(&self, filter: FilterRequest) -> RpcResult<Vec<TransactionTrace>>;
+
+	/// Returns debank-format block trace with state diff.
+	#[method(name = "trace_debankBlock")]
+	async fn debank_block(&self, block: RequestBlockId) -> RpcResult<DebankOutput>;
 }
 
 #[derive(Clone, Eq, PartialEq, Debug, Deserialize)]

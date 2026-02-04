@@ -7422,6 +7422,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "md-5"
+version = "0.10.6"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d89e7ee0cfbedfc4da3340218492196241d89eefb6dab27de5df917a6d2e78cf"
+dependencies = [
+ "cfg-if",
+ "digest 0.10.7",
+]
+
+[[package]]
 name = "memchr"
 version = "2.7.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -7842,10 +7852,13 @@ name = "moonbeam-client-evm-tracing"
 version = "0.1.0"
 dependencies = [
  "ethereum-types",
+ "evm",
  "evm-tracing-events",
  "hex",
  "log",
+ "md-5",
  "parity-scale-codec",
+ "rlp 0.6.1",
  "serde",
  "sp-runtime",
  "sp-std",
@@ -7941,6 +7954,8 @@ name = "moonbeam-rpc-core-types"
 version = "0.1.0"
 dependencies = [
  "ethereum-types",
+ "hex",
+ "md-5",
  "serde",
 ]
 
@@ -8002,8 +8017,10 @@ dependencies = [
 name = "moonbeam-rpc-trace"
 version = "0.6.0"
 dependencies = [
+ "async-trait",
  "ethereum-types",
  "fc-rpc",
+ "fc-rpc-core",
  "fc-storage",
  "fp-rpc",
  "futures 0.3.31",
@@ -8013,12 +8030,15 @@ dependencies = [
  "moonbeam-rpc-core-trace",
  "moonbeam-rpc-core-types",
  "moonbeam-rpc-primitives-debug",
+ "parity-scale-codec",
+ "rlp 0.6.1",
  "sc-client-api",
  "sc-service",
  "sc-utils",
  "sp-api",
  "sp-block-builder",
  "sp-blockchain",
+ "sp-core",
  "sp-runtime",
  "substrate-prometheus-endpoint",
  "tokio",

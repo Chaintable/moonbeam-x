@@ -10,6 +10,8 @@ version = "0.1.0"
 [dependencies]
 ethereum-types = { workspace = true, features = [ "std" ] }
 hex = { workspace = true, features = [ "serde" ] }
+md-5 = { workspace = true }
+rlp = { workspace = true }
 serde = { workspace = true, features = [ "derive", "std" ] }
 log = { workspace = true }
 
@@ -20,3 +22,6 @@ evm-tracing-events = { workspace = true, features = [ "std" ] }
 parity-scale-codec = { workspace = true, features = [ "std" ] }
 sp-std = { workspace = true, features = [ "std" ] }
 sp-runtime = { workspace = true, features = [ "std" ] }
+
+[dev-dependencies]
+evm = { workspace = true }

@@ -14,10 +14,11 @@
 // You should have received a copy of the GNU General Public License
 // along with Moonbeam.  If not, see <http://www.gnu.org/licenses/>.
 
-pub mod call_list;
-pub mod debank;
-pub mod raw;
+//! Internal Debank types for state diff encoding.
+//! The main Debank output types are defined in moonbeam-rpc-core-types::debank.
 
-pub use call_list::Listener as CallList;
-pub use debank::Listener as Debank;
-pub use raw::Listener as Raw;
+// Re-export types from moonbeam-client-evm-tracing to avoid duplication.
+// These types are used for state diff encoding and must be consistent.
+pub use moonbeam_client_evm_tracing::types::block::{
+	AccountStorageDiff, BlockStorageDiff, IndexValuePair, NewAccount, NewCode,
+};

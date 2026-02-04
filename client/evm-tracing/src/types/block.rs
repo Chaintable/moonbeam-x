@@ -17,6 +17,7 @@
 //! Types for tracing all Ethereum transactions of a block.
 
 use super::serialization::*;
+use rlp::{Encodable, RlpStream};
 use serde::Serialize;
 
 use ethereum_types::{H160, H256, U256};
@@ -105,4 +106,106 @@ pub enum TransactionTraceResult {
 		gas_used: U256,
 	},
 	Suicide,
+}
+
+/// New account created in a block
+#[derive(Clone, Eq, PartialEq, Debug, Encode, Decode, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct NewAccount {
+	pub address: H160,
+	#[serde(serialize_with = "u256_0x_serialize")]
+	pub balance: U256,
+	pub nonce: u64,
+	#[serde(serialize_with = "h256_0x_serialize")]
+	pub code_hash: H256,
+}
+
+/// New contract code deployed in a block
+#[derive(Clone, Eq, PartialEq, Debug, Encode, Decode, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct NewCode {
+	#[serde(serialize_with = "h256_0x_serialize")]
+	pub code_hash: H256,
+	#[serde(serialize_with = "bytes_0x_serialize")]
+	pub code: Vec<u8>,
+}
+
+/// Index-value pair for storage diff
+#[derive(Clone, Eq, PartialEq, Debug, Encode, Decode, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct IndexValuePair {
+	#[serde(serialize_with = "h256_0x_serialize")]
+	pub index: H256,
+	#[serde(serialize_with = "h256_0x_serialize")]
+	pub value: H256,
+}
+
+/// Storage diff for a single account
+#[derive(Clone, Eq, PartialEq, Debug, Encode, Decode, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AccountStorageDiff {
+	pub address: H160,
+	pub values: Vec<IndexValuePair>,
+}
+
+/// Block storage diff for trace_blockDiff/trace_debankBlock RPC
+#[derive(Clone, Eq, PartialEq, Debug, Encode, Decode, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BlockStorageDiff {
+	#[serde(serialize_with = "h256_0x_serialize")]
+	pub hash: H256,
+	#[serde(serialize_with = "h256_0x_serialize")]
+	pub parent_hash: H256,
+	pub new_accounts: Vec<NewAccount>,
+	pub deleted_accounts: Vec<H160>,
+	pub storage_diff: Vec<AccountStorageDiff>,
+	pub new_codes: Vec<NewCode>,
+}
+
+// RLP encoding implementations for state diff types
+
+impl Encodable for NewAccount {
+	fn rlp_append(&self, s: &mut RlpStream) {
+		s.begin_list(4);
+		s.append(&self.address);
+		s.append(&self.balance);
+		s.append(&self.nonce);
+		s.append(&self.code_hash);
+	}
+}
+
+impl Encodable for NewCode {
+	fn rlp_append(&self, s: &mut RlpStream) {
+		s.begin_list(2);
+		s.append(&self.code_hash);
+		s.append(&self.code);
+	}
+}
+
+impl Encodable for IndexValuePair {
+	fn rlp_append(&self, s: &mut RlpStream) {
+		s.begin_list(2);
+		s.append(&self.index);
+		s.append(&self.value);
+	}
+}
+
+impl Encodable for AccountStorageDiff {
+	fn rlp_append(&self, s: &mut RlpStream) {
+		s.begin_list(2);
+		s.append(&self.address);
+		s.append_list(&self.values);
+	}
+}
+
+impl Encodable for BlockStorageDiff {
+	fn rlp_append(&self, s: &mut RlpStream) {
+		s.begin_list(6);
+		s.append(&self.hash);
+		s.append(&self.parent_hash);
+		s.append_list(&self.new_accounts);
+		s.append_list(&self.deleted_accounts);
+		s.append_list(&self.storage_diff);
+		s.append_list(&self.new_codes);
+	}
 }

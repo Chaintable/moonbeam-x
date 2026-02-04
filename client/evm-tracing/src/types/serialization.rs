@@ -112,3 +112,10 @@ where
 {
 	serializer.serialize_str(&format!("0x{:x}", data))
 }
+
+pub fn u256_0x_serialize<S>(data: &U256, serializer: S) -> Result<S::Ok, S::Error>
+where
+	S: Serializer,
+{
+	serializer.serialize_str(&format!("0x{:x}", data))
+}

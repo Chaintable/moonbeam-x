@@ -14,6 +14,8 @@
 // You should have received a copy of the GNU General Public License
 // along with Moonbeam.  If not, see <http://www.gnu.org/licenses/>.
 
+pub mod debank;
+
 use ethereum_types::H256;
 use serde::{de::Error, Deserialize, Deserializer};
 
@@ -41,9 +43,9 @@ where
 	let buf = String::deserialize(deserializer)?;
 
 	let parsed = match buf.strip_prefix("0x") {
-		Some(buf) => u32::from_str_radix(&buf, 16),
-		None => u32::from_str_radix(&buf, 10),
+		Some(hex_str) => u32::from_str_radix(hex_str, 16),
+		None => buf.parse::<u32>(),
 	};
 
-	parsed.map_err(|e| Error::custom(format!("parsing error: {:?} from '{}'", e, buf)))
+	parsed.map_err(|e| Error::custom(format!("parsing error: {e:?} from '{buf}'")))
 }

@@ -198,7 +198,7 @@ where
 		ethapi_cmd,
 		command_sink,
 		frontier_backend,
-		backend: _,
+		backend,
 		max_past_logs,
 		max_block_range,
 		fee_history_limit,
@@ -226,65 +226,66 @@ where
 	}
 	let convert_transaction: Option<Never> = None;
 
-	// Need to clone it to avoid moving of `client` variable in closure below.
-	let client_for_cidp = client.clone();
+	// Helper to create pending inherent data providers
+	let create_pending_cidp = |client_for_cidp: Arc<C>| {
+		move |block, _| {
+			// Use timestamp in the future
+			let timestamp = sp_timestamp::InherentDataProvider::new(
+				Timestamp::current()
+					.saturating_add(RELAY_CHAIN_SLOT_DURATION_MILLIS.saturating_mul(100))
+					.into(),
+			);
 
-	let pending_create_inherent_data_providers = move |block, _| {
-		// Use timestamp in the future
-		let timestamp = sp_timestamp::InherentDataProvider::new(
-			Timestamp::current()
-				.saturating_add(RELAY_CHAIN_SLOT_DURATION_MILLIS.saturating_mul(100))
-				.into(),
-		);
+			let maybe_current_para_head = client_for_cidp.expect_header(block);
+			async move {
+				let current_para_block_head = Some(polkadot_primitives::HeadData(
+					maybe_current_para_head?.encode(),
+				));
 
-		let maybe_current_para_head = client_for_cidp.expect_header(block);
-		async move {
-			let current_para_block_head = Some(polkadot_primitives::HeadData(
-				maybe_current_para_head?.encode(),
-			));
+				let builder = RelayStateSproofBuilder {
+					para_id,
+					// Use a future relay slot (We derive one from the timestamp)
+					current_slot: polkadot_primitives::Slot::from(
+						timestamp
+							.timestamp()
+							.as_millis()
+							.saturating_div(RELAY_CHAIN_SLOT_DURATION_MILLIS),
+					),
+					included_para_head: current_para_block_head,
+					..Default::default()
+				};
 
-			let builder = RelayStateSproofBuilder {
-				para_id,
-				// Use a future relay slot (We derive one from the timestamp)
-				current_slot: polkadot_primitives::Slot::from(
-					timestamp
-						.timestamp()
-						.as_millis()
-						.saturating_div(RELAY_CHAIN_SLOT_DURATION_MILLIS),
-				),
-				included_para_head: current_para_block_head,
-				..Default::default()
-			};
+				// Create a dummy parachain inherent data provider which is required to pass
+				// the checks by the para chain system. We use dummy values because in the 'pending context'
+				// neither do we have access to the real values nor do we need them.
+				let (relay_parent_storage_root, relay_chain_state) =
+					builder.into_state_root_and_proof();
 
-			// Create a dummy parachain inherent data provider which is required to pass
-			// the checks by the para chain system. We use dummy values because in the 'pending context'
-			// neither do we have access to the real values nor do we need them.
-			let (relay_parent_storage_root, relay_chain_state) =
-				builder.into_state_root_and_proof();
+				let vfp = PersistedValidationData {
+					// This is a hack to make `cumulus_pallet_parachain_system::RelayNumberStrictlyIncreases`
+					// happy. Relay parent number can't be bigger than u32::MAX.
+					relay_parent_number: u32::MAX,
+					relay_parent_storage_root,
+					..Default::default()
+				};
+				let parachain_inherent_data = ParachainInherentData {
+					validation_data: vfp,
+					relay_chain_state,
+					downward_messages: Default::default(),
+					horizontal_messages: Default::default(),
+					relay_parent_descendants: Default::default(),
+					collator_peer_id: None,
+				};
 
-			let vfp = PersistedValidationData {
-				// This is a hack to make `cumulus_pallet_parachain_system::RelayNumberStrictlyIncreases`
-				// happy. Relay parent number can't be bigger than u32::MAX.
-				relay_parent_number: u32::MAX,
-				relay_parent_storage_root,
-				..Default::default()
-			};
-			let parachain_inherent_data = ParachainInherentData {
-				validation_data: vfp,
-				relay_chain_state,
-				downward_messages: Default::default(),
-				horizontal_messages: Default::default(),
-				relay_parent_descendants: Default::default(),
-				collator_peer_id: None,
-			};
-
-			Ok((timestamp, parachain_inherent_data))
+				Ok((timestamp, parachain_inherent_data))
+			}
 		}
 	};
 
+	// Create Eth API for main RPC
 	io.merge(
 		Eth::<_, _, _, _, _, _, MoonbeamEthConfig<_, _>>::new(
-			Arc::clone(&client.clone()),
+			Arc::clone(&client),
 			Arc::clone(&pool),
 			graph.clone(),
 			convert_transaction,
@@ -294,16 +295,39 @@ where
 			Arc::clone(&frontier_backend),
 			is_authority,
 			Arc::clone(&block_data_cache),
-			fee_history_cache,
+			fee_history_cache.clone(),
 			fee_history_limit,
 			10,
-			forced_parent_hashes,
-			pending_create_inherent_data_providers,
+			forced_parent_hashes.clone(),
+			create_pending_cidp(client.clone()),
 			Some(pending_consenus_data_provider),
 		)
 		.replace_config::<MoonbeamEthConfig<C, BE>>()
 		.into_rpc(),
 	)?;
+
+	// Create a second Eth API for Trace (as EthDataProvider)
+	let eth_api_for_trace: Arc<dyn moonbeam_rpc_trace::EthDataProvider> = Arc::new(
+		Eth::<_, _, _, _, _, _, MoonbeamEthConfig<_, _>>::new(
+			Arc::clone(&client),
+			Arc::clone(&pool),
+			graph.clone(),
+			None::<Never>,
+			Arc::clone(&sync),
+			Vec::new(), // empty signers for trace
+			Arc::clone(&overrides),
+			Arc::clone(&frontier_backend),
+			is_authority,
+			Arc::clone(&block_data_cache),
+			fee_history_cache.clone(),
+			fee_history_limit,
+			10,
+			forced_parent_hashes.clone(),
+			create_pending_cidp(client.clone()),
+			None, // no pending consensus for trace
+		)
+		.replace_config::<MoonbeamEthConfig<C, BE>>(),
+	);
 
 	if let Some(filter_pool) = filter_pool {
 		io.merge(
@@ -338,7 +362,7 @@ where
 			Arc::clone(&client),
 			sync.clone(),
 			subscription_task_executor,
-			overrides,
+			overrides.clone(),
 			pubsub_notification_sinks.clone(),
 		)
 		.into_rpc(),
@@ -375,7 +399,10 @@ where
 		if let Some(trace_filter_requester) = tracing_config.tracing_requesters.trace {
 			io.merge(
 				Trace::new(
-					client,
+					client.clone(),
+					backend,
+					overrides.clone(),
+					eth_api_for_trace.clone(),
 					trace_filter_requester,
 					tracing_config.trace_filter_max_count,
 					tracing_config.max_block_range,

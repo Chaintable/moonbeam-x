@@ -14,10 +14,12 @@
 // You should have received a copy of the GNU General Public License
 // along with Moonbeam.  If not, see <http://www.gnu.org/licenses/>.
 
-pub mod call_list;
-pub mod debank;
-pub mod raw;
+//! Debank trace format support for Moonbeam.
+//!
+//! This module provides the implementation for `trace_debankBlock` RPC method.
 
-pub use call_list::Listener as CallList;
-pub use debank::Listener as Debank;
-pub use raw::Listener as Raw;
+pub mod state_diff;
+pub mod types;
+
+pub use state_diff::*;
+pub use types::*;

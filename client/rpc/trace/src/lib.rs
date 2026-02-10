@@ -114,6 +114,7 @@ pub struct Trace<B, C, BE> {
 	_phantom: PhantomData<(B, BE)>,
 	client: Arc<C>,
 	backend: Arc<BE>,
+	frontier_backend: Arc<dyn fc_api::Backend<B>>,
 	overrides: Arc<dyn StorageOverride<B>>,
 	eth_data_provider: Arc<dyn EthDataProvider>,
 	requester: CacheRequester,
@@ -127,6 +128,7 @@ impl<B, C, BE> Clone for Trace<B, C, BE> {
 			_phantom: PhantomData,
 			client: Arc::clone(&self.client),
 			backend: Arc::clone(&self.backend),
+			frontier_backend: Arc::clone(&self.frontier_backend),
 			overrides: Arc::clone(&self.overrides),
 			eth_data_provider: Arc::clone(&self.eth_data_provider),
 			requester: self.requester.clone(),
@@ -148,6 +150,7 @@ where
 	pub fn new(
 		client: Arc<C>,
 		backend: Arc<BE>,
+		frontier_backend: Arc<dyn fc_api::Backend<B>>,
 		overrides: Arc<dyn StorageOverride<B>>,
 		eth_data_provider: Arc<dyn EthDataProvider>,
 		requester: CacheRequester,
@@ -157,6 +160,7 @@ where
 		Self {
 			client,
 			backend,
+			frontier_backend,
 			overrides,
 			eth_data_provider,
 			requester,
@@ -326,30 +330,54 @@ where
 {
 	/// Implementation of trace_debankBlock.
 	async fn trace_debank_block(self, block_id: RequestBlockId) -> Result<DebankOutput, String> {
-		// Convert block ID to block height
-		let block_height = match block_id {
-			RequestBlockId::Number(n) => n,
-			RequestBlockId::Tag(RequestBlockTag::Latest) => self.client.info().best_number,
-			RequestBlockId::Tag(RequestBlockTag::Earliest) => 0,
-			RequestBlockId::Tag(RequestBlockTag::Finalized) => self.client.info().finalized_number,
-			RequestBlockId::Tag(RequestBlockTag::Pending) => {
-				return Err("'pending' is not supported".to_string());
+		// Resolve block ID to (substrate_hash, block_height)
+		let (substrate_hash, block_height) = match block_id {
+			RequestBlockId::Hash(eth_hash) => {
+				// Use frontier backend to map Ethereum block hash → substrate hash
+				let substrate_hash =
+					fc_rpc::frontier_backend_client::load_hash::<B, C>(
+						self.client.as_ref(),
+						self.frontier_backend.as_ref(),
+						eth_hash,
+					)
+					.await
+					.map_err(|e| format!("Failed to load hash: {:?}", e))?
+					.ok_or_else(|| {
+						format!("Block with eth hash {:?} not found", eth_hash)
+					})?;
+				let number = *self
+					.client
+					.header(substrate_hash)
+					.map_err(|e| format!("Failed to get header: {:?}", e))?
+					.ok_or_else(|| {
+						format!("Block header not found for hash {:?}", substrate_hash)
+					})?
+					.number();
+				(substrate_hash, number)
 			}
-			RequestBlockId::Hash(hash) => {
-				// Look up block number from hash
-				self.client
-					.number(hash)
-					.map_err(|e| format!("Failed to get block number: {:?}", e))?
-					.ok_or_else(|| format!("Block with hash {:?} not found", hash))?
+			_ => {
+				let number = match block_id {
+					RequestBlockId::Number(n) => n,
+					RequestBlockId::Tag(RequestBlockTag::Latest) => self.client.info().best_number,
+					RequestBlockId::Tag(RequestBlockTag::Earliest) => 0,
+					RequestBlockId::Tag(RequestBlockTag::Finalized) => {
+						self.client.info().finalized_number
+					}
+					RequestBlockId::Tag(RequestBlockTag::Pending) => {
+						return Err("'pending' is not supported".to_string());
+					}
+					RequestBlockId::Hash(_) => unreachable!(),
+				};
+				let hash = self
+					.client
+					.hash(number)
+					.map_err(|e| {
+						format!("Error when fetching block {} hash: {:?}", number, e)
+					})?
+					.ok_or_else(|| format!("Block with height {} doesn't exist", number))?;
+				(hash, number)
 			}
 		};
-
-		// Get substrate block hash
-		let substrate_hash = self
-			.client
-			.hash(block_height)
-			.map_err(|e| format!("Error when fetching block {} hash: {:?}", block_height, e))?
-			.ok_or_else(|| format!("Block with height {} doesn't exist", block_height))?;
 
 		// Get Ethereum block data
 		let eth_block = self

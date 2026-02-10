@@ -401,6 +401,7 @@ where
 				Trace::new(
 					client.clone(),
 					backend,
+					frontier_backend.clone(),
 					overrides.clone(),
 					eth_api_for_trace.clone(),
 					trace_filter_requester,

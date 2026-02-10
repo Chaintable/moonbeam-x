@@ -8019,6 +8019,7 @@ version = "0.6.0"
 dependencies = [
  "async-trait",
  "ethereum-types",
+ "fc-api",
  "fc-rpc",
  "fc-rpc-core",
  "fc-storage",

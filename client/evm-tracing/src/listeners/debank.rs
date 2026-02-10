@@ -178,8 +178,6 @@ pub struct EventLog {
 pub struct Listener {
 	/// Call stack during tracing
 	callstack: Vec<CallFrame>,
-	/// Transaction cost (intrinsic gas for gas calculation)
-	transaction_cost: u64,
 
 	/// Completed call frames (one per transaction when tracing blocks)
 	pub completed_frames: Vec<CallFrame>,
@@ -218,12 +216,11 @@ pub struct Listener {
 
 impl Default for Listener {
 	fn default() -> Self {
-		Self {
-			callstack: Vec::new(),
-			transaction_cost: 0,
-			completed_frames: Vec::new(),
-			created_accounts: HashSet::new(),
-			deleted_accounts: HashSet::new(),
+			Self {
+				callstack: Vec::new(),
+				completed_frames: Vec::new(),
+				created_accounts: HashSet::new(),
+				deleted_accounts: HashSet::new(),
 			touched_accounts: HashSet::new(),
 			storage_changes: HashMap::new(),
 			storage_contracts: HashSet::new(),
@@ -385,8 +382,7 @@ impl Listener {
 					frame.gas_remaining = snapshot.gas();
 				}
 			}
-			GasometerEvent::RecordTransaction { cost, .. } => {
-				self.transaction_cost = cost;
+			GasometerEvent::RecordTransaction { .. } => {
 				self.record_transaction_event_only = true;
 			}
 			_ => {}

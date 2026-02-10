@@ -24,6 +24,17 @@ use evm_tracing_events::{
 };
 use std::collections::{HashMap, HashSet};
 
+/// Tracing version based on runtime capabilities.
+#[derive(Debug, Clone, Copy)]
+enum TracingVersion {
+	/// Older runtimes without TransactX/Exit events.
+	/// Frame exits only come from RuntimeEvent::StepResult(Capture::Exit).
+	Legacy,
+	/// Modern runtimes with TransactX/Exit events.
+	/// EvmEvent::Exit is always emitted; StepResult(Capture::Exit) may also fire.
+	EarlyTransact,
+}
+
 /// Call type for Debank tracing (includes Create and Suicide)
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DebankCallType {
@@ -77,6 +88,8 @@ pub struct CallFrame {
 	pub logs: Vec<EventLog>,
 	/// Trace address (position in call tree)
 	pub trace_address: Vec<usize>,
+	/// Whether this frame has been processed by capture_exit (output/gas computed).
+	exited: bool,
 	/// Whether this is a precompile subcall (may not have matching Exit event)
 	pub is_precompile: bool,
 	/// Whether this precompile has had a subcall (only meaningful for precompile frames).
@@ -113,12 +126,14 @@ impl CallFrame {
 			calls: Vec::new(),
 			logs: Vec::new(),
 			trace_address: Vec::new(),
+			exited: false,
 			is_precompile: false,
 			had_subcall: false,
 		}
 	}
 
 	fn process_output(&mut self, output: Vec<u8>, reason: &ExitReason) {
+		self.exited = true;
 		match reason {
 			ExitReason::Succeed(_) => {
 				self.output = output;
@@ -189,6 +204,15 @@ pub struct Listener {
 	first_transaction: bool,
 	/// Global log index counter
 	global_log_index: usize,
+
+	/// Tracing version (Legacy or EarlyTransact)
+	version: TracingVersion,
+	/// Whether StepResult(Capture::Exit) already handled the current exit,
+	/// preventing double-pop when EvmEvent::Exit follows.
+	step_result_exit_handled: bool,
+	/// True if only RecordTransaction was received; handles edge case where
+	/// transaction cannot pay for its own data cost in Legacy mode.
+	record_transaction_event_only: bool,
 }
 
 impl Default for Listener {
@@ -206,6 +230,9 @@ impl Default for Listener {
 			skip_next_context: false,
 			first_transaction: true,
 			global_log_index: 0,
+			version: TracingVersion::Legacy,
+			step_result_exit_handled: false,
+			record_transaction_event_only: false,
 		}
 	}
 }
@@ -297,22 +324,55 @@ impl Listener {
 		// Flush any pending precompile frames that didn't get an Exit event
 		self.flush_pending_precompiles(None);
 
-		if let Some(mut root_frame) = self.callstack.pop() {
+		// Drain callstack; keep only the root frame (first), discard inner leftovers.
+		let mut callstack = Vec::new();
+		core::mem::swap(&mut self.callstack, &mut callstack);
+
+		if let Some(mut root_frame) = callstack.into_iter().next() {
+			// If root frame was never processed by capture_exit (Legacy early exit),
+			// calculate gas and mark as error.
+			if !root_frame.exited {
+				root_frame.failed = true;
+				root_frame.error =
+					"early exit (out of gas, stack overflow, direct call to precompile, ...)"
+						.to_string();
+				if let Some(sg) = root_frame.start_gas {
+					root_frame.gas = sg;
+				}
+				root_frame.gas_used = root_frame.gas.saturating_sub(root_frame.gas_remaining);
+			}
+
 			// Set parent_failed flags recursively
 			set_parent_failed(&mut root_frame, false);
 			// Calculate storage_change flags
 			set_storage_change(&mut root_frame, &mut self.storage_contracts);
-			// Add gas cost
+			// Add transaction intrinsic gas cost
 			if root_frame.gas_used == 0 {
 				root_frame.gas_used = self.transaction_cost;
 			}
 			self.completed_frames.push(root_frame);
+		} else if self.record_transaction_event_only {
+			// Transaction couldn't pay for its own data cost (Legacy mode edge case).
+			// No frames were ever created; produce a dummy error frame.
+			let mut frame = CallFrame::new(
+				DebankCallType::Call,
+				H160::zero(),
+				H160::zero(),
+				0,
+				U256::zero(),
+				Vec::new(),
+			);
+			frame.failed = true;
+			frame.error = "transaction could not pay its own data cost".to_string();
+			self.completed_frames.push(frame);
 		}
 
-		// Clear callstack for next transaction
+		// Clear state for next transaction
 		self.callstack.clear();
 		self.skip_next_context = false;
 		self.call_type = None;
+		self.step_result_exit_handled = false;
+		self.record_transaction_event_only = false;
 	}
 
 	fn gasometer_event(&mut self, event: GasometerEvent) {
@@ -330,6 +390,7 @@ impl Listener {
 			}
 			GasometerEvent::RecordTransaction { cost, .. } => {
 				self.transaction_cost = cost;
+				self.record_transaction_event_only = true;
 			}
 			_ => {}
 		}
@@ -349,9 +410,20 @@ impl Listener {
 				result: Err(Capture::Exit(reason)),
 				return_value,
 			} => {
-				// Flush precompile frames that haven't had subcalls
 				self.flush_precompiles_without_subcalls();
-				self.capture_exit(&reason, return_value);
+				match self.version {
+					TracingVersion::Legacy => {
+						// In Legacy mode, this is the only exit event; handle directly.
+						self.capture_exit(&reason, return_value);
+					}
+					TracingVersion::EarlyTransact => {
+						// In EarlyTransact mode, EvmEvent::Exit will also fire for this
+						// same frame. Process with StepResult's data (more accurate) and
+						// set flag so EvmEvent::Exit skips the redundant pop.
+						self.capture_exit(&reason, return_value);
+						self.step_result_exit_handled = true;
+					}
+				}
 			}
 			RuntimeEvent::SStore {
 				address,
@@ -387,6 +459,9 @@ impl Listener {
 				data,
 				gas_limit,
 			} => {
+				self.version = TracingVersion::EarlyTransact;
+				self.record_transaction_event_only = false;
+
 				self.touched_accounts.insert(caller);
 				if !value.is_zero() {
 					self.touched_accounts.insert(address);
@@ -418,6 +493,9 @@ impl Listener {
 				address,
 				..
 			} => {
+				self.version = TracingVersion::EarlyTransact;
+				self.record_transaction_event_only = false;
+
 				self.touched_accounts.insert(caller);
 				self.created_accounts.insert(address);
 				self.touched_accounts.insert(address);
@@ -441,6 +519,8 @@ impl Listener {
 				target_gas,
 				..
 			} => {
+				self.record_transaction_event_only = false;
+
 				// Flush precompile frames that don't match this caller
 				// (they returned via Capture::Exit without an Exit event)
 				self.flush_pending_precompiles(Some(context.caller));
@@ -491,6 +571,8 @@ impl Listener {
 				target_gas,
 				..
 			} => {
+				self.record_transaction_event_only = false;
+
 				// Flush precompile frames that don't match this caller
 				self.flush_pending_precompiles(Some(caller));
 				// Mark matching precompile as having a subcall (Capture::Trap path)
@@ -556,10 +638,16 @@ impl Listener {
 				reason,
 				return_value,
 			} => {
-				// Flush precompile frames that haven't had subcalls
-				// (they returned via Capture::Exit, this Exit belongs to parent)
-				self.flush_precompiles_without_subcalls();
-				self.capture_exit(&reason, return_value);
+				self.record_transaction_event_only = false;
+
+				if self.step_result_exit_handled {
+					// StepResult already processed this exit; skip to avoid double-pop.
+					self.step_result_exit_handled = false;
+				} else {
+					// StepResult was skipped (e.g. precompile call); handle normally.
+					self.flush_precompiles_without_subcalls();
+					self.capture_exit(&reason, return_value);
+				}
 			}
 
 			EvmEvent::PrecompileSubcall {
@@ -1773,5 +1861,148 @@ mod tests {
 
 		assert_eq!(listener.completed_frames.len(), 1);
 		assert_eq!(listener.completed_frames[0].calls.len(), 1);
+	}
+
+	// ============ Double-Exit Prevention Tests ============
+
+	#[test]
+	fn no_double_pop_when_step_result_and_evm_exit_both_fire() {
+		// In EarlyTransact mode, StepResult(Capture::Exit) + EvmEvent::Exit both
+		// fire for the same subcall. Without the flag, this would double-pop.
+		let mut listener = Listener::default();
+
+		// Main call
+		do_transact_call_event(&mut listener);
+		do_gasometer_event(&mut listener);
+		do_evm_call_event(&mut listener);
+		do_runtime_step_event(&mut listener);
+		do_runtime_step_result_event(&mut listener);
+
+		// Nested call
+		do_evm_call_event(&mut listener);
+		do_runtime_step_event(&mut listener);
+
+		// Both StepResult(Exit) and EvmEvent::Exit fire for the nested call
+		do_runtime_step_result_exit_event(&mut listener);
+		do_exit_event(&mut listener);
+
+		// Main exit
+		do_exit_event(&mut listener);
+		listener.finish_transaction();
+
+		assert_eq!(listener.completed_frames.len(), 1);
+		assert_eq!(listener.completed_frames[0].calls.len(), 1);
+		assert!(!listener.completed_frames[0].failed);
+	}
+
+	#[test]
+	fn no_double_pop_deeply_nested() {
+		// Deeper nesting: without fix, double-pop would pop the parent too.
+		let mut listener = Listener::default();
+
+		// Main call
+		do_transact_call_event(&mut listener);
+		do_gasometer_event(&mut listener);
+		do_evm_call_event(&mut listener);
+		do_runtime_step_event(&mut listener);
+		do_runtime_step_result_event(&mut listener);
+
+		// Level 1 call
+		do_evm_call_event(&mut listener);
+		do_runtime_step_event(&mut listener);
+		do_runtime_step_result_event(&mut listener);
+
+		// Level 2 call
+		do_evm_call_event(&mut listener);
+		do_runtime_step_event(&mut listener);
+
+		// Both events fire for level 2
+		do_runtime_step_result_exit_event(&mut listener);
+		do_exit_event(&mut listener);
+
+		// Both events fire for level 1
+		do_runtime_step_result_exit_event(&mut listener);
+		do_exit_event(&mut listener);
+
+		// Main exit
+		do_exit_event(&mut listener);
+		listener.finish_transaction();
+
+		assert_eq!(listener.completed_frames.len(), 1);
+		// Level 1 should be child of root
+		assert_eq!(listener.completed_frames[0].calls.len(), 1);
+		// Level 2 should be child of level 1
+		assert_eq!(listener.completed_frames[0].calls[0].calls.len(), 1);
+	}
+
+	// ============ Legacy Mode Tests ============
+
+	#[test]
+	fn legacy_basic_call() {
+		// Legacy mode: no TransactX, no EvmEvent::Exit.
+		// Root frame created from EvmEvent::Call, exit from StepResult(Capture::Exit).
+		let mut listener = Listener::default();
+		do_gasometer_event(&mut listener);
+		do_evm_call_event(&mut listener);
+		do_runtime_step_event(&mut listener);
+		do_runtime_step_result_exit_event(&mut listener);
+		listener.finish_transaction();
+
+		assert_eq!(listener.completed_frames.len(), 1);
+		assert_eq!(listener.completed_frames[0].call_type, DebankCallType::Call);
+	}
+
+	#[test]
+	fn legacy_nested_call() {
+		let mut listener = Listener::default();
+		do_gasometer_event(&mut listener);
+
+		// Root call
+		do_evm_call_event(&mut listener);
+		do_runtime_step_event(&mut listener);
+		do_runtime_step_result_event(&mut listener);
+
+		// Nested call
+		do_evm_call_event(&mut listener);
+		do_runtime_step_event(&mut listener);
+		do_runtime_step_result_exit_event(&mut listener);
+
+		// Root exit
+		do_runtime_step_result_exit_event(&mut listener);
+		listener.finish_transaction();
+
+		assert_eq!(listener.completed_frames.len(), 1);
+		assert_eq!(listener.completed_frames[0].calls.len(), 1);
+	}
+
+	#[test]
+	fn legacy_early_exit_no_runtime() {
+		// Legacy mode: call exits before any runtime stepping (e.g. precompile).
+		// finish_transaction should handle the leftover frame.
+		let mut listener = Listener::default();
+		do_gasometer_event(&mut listener);
+		do_evm_call_event(&mut listener);
+		// No StepResult exit, frame is leftover
+		listener.finish_transaction();
+
+		assert_eq!(listener.completed_frames.len(), 1);
+		assert!(listener.completed_frames[0].failed);
+		assert!(listener.completed_frames[0]
+			.error
+			.contains("early exit"));
+	}
+
+	#[test]
+	fn legacy_record_transaction_only() {
+		// Transaction cannot pay for data cost: only RecordTransaction fires, no frames.
+		let mut listener = Listener::default();
+		do_gasometer_event(&mut listener);
+		listener.finish_transaction();
+
+		assert_eq!(listener.completed_frames.len(), 1);
+		assert!(listener.completed_frames[0].failed);
+		assert!(listener.completed_frames[0]
+			.error
+			.contains("data cost"));
 	}
 }

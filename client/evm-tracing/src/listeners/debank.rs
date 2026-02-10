@@ -347,10 +347,6 @@ impl Listener {
 			set_parent_failed(&mut root_frame, false);
 			// Calculate storage_change flags
 			set_storage_change(&mut root_frame, &mut self.storage_contracts);
-			// Add transaction intrinsic gas cost
-			if root_frame.gas_used == 0 {
-				root_frame.gas_used = self.transaction_cost;
-			}
 			self.completed_frames.push(root_frame);
 		} else if self.record_transaction_event_only {
 			// Transaction couldn't pay for its own data cost (Legacy mode edge case).
@@ -725,7 +721,7 @@ impl Listener {
 				if let Some(sg) = frame.start_gas {
 					frame.gas = sg;
 				}
-				// Calculate gas_used for root frame
+				// Calculate gas_used for root frame (pure execution gas, no intrinsic cost)
 				frame.gas_used = frame.gas.saturating_sub(frame.gas_remaining);
 
 				// If Create failed, remove from created_accounts

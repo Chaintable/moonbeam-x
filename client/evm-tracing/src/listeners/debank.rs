@@ -50,6 +50,9 @@ pub struct CallFrame {
 	pub gas_used: u64,
 	/// Gas remaining (updated during execution, used to calculate gas_used on exit)
 	gas_remaining: u64,
+	/// Actual gas at frame start, captured from the first gasometer snapshot.
+	/// Used to set `gas` (the reported gas limit) on exit.
+	start_gas: Option<u64>,
 	/// Input data
 	pub input: Vec<u8>,
 	/// Output data
@@ -97,6 +100,7 @@ impl CallFrame {
 			gas,
 			gas_used: 0,
 			gas_remaining: gas,
+			start_gas: None,
 			input,
 			output: Vec::new(),
 			value,
@@ -318,6 +322,9 @@ impl Listener {
 			| GasometerEvent::RecordStipend { snapshot, .. } => {
 				// Update gas_remaining for the current frame
 				if let Some(frame) = self.callstack.last_mut() {
+					if frame.start_gas.is_none() {
+						frame.start_gas = Some(snapshot.gas());
+					}
 					frame.gas_remaining = snapshot.gas();
 				}
 			}
@@ -625,6 +632,10 @@ impl Listener {
 				};
 
 				frame.process_output(return_value, reason);
+				// Use actual start gas as gas limit
+				if let Some(sg) = frame.start_gas {
+					frame.gas = sg;
+				}
 				// Calculate gas_used for root frame
 				frame.gas_used = frame.gas.saturating_sub(frame.gas_remaining);
 
@@ -649,6 +660,10 @@ impl Listener {
 
 			call.process_output(return_value, reason);
 
+			// Use actual start gas as gas limit
+			if let Some(sg) = call.start_gas {
+				call.gas = sg;
+			}
 			// Calculate gas_used = initial_gas - remaining_gas
 			call.gas_used = call.gas.saturating_sub(call.gas_remaining);
 

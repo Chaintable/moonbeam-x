@@ -207,9 +207,10 @@ pub struct Listener {
 
 	/// Tracing version (Legacy or EarlyTransact)
 	version: TracingVersion,
-	/// Whether StepResult(Capture::Exit) already handled the current exit,
-	/// preventing double-pop when EvmEvent::Exit follows.
-	step_result_exit_handled: bool,
+	/// Count of exits already handled by StepResult(Capture::Exit),
+	/// preventing double-pop when the corresponding EvmEvent::Exit follows.
+	/// Supports multiple pending exits in case they arrive in batch.
+	step_result_exit_count: usize,
 	/// True if only RecordTransaction was received; handles edge case where
 	/// transaction cannot pay for its own data cost in Legacy mode.
 	record_transaction_event_only: bool,
@@ -231,7 +232,7 @@ impl Default for Listener {
 			first_transaction: true,
 			global_log_index: 0,
 			version: TracingVersion::Legacy,
-			step_result_exit_handled: false,
+			step_result_exit_count: 0,
 			record_transaction_event_only: false,
 		}
 	}
@@ -371,7 +372,7 @@ impl Listener {
 		self.callstack.clear();
 		self.skip_next_context = false;
 		self.call_type = None;
-		self.step_result_exit_handled = false;
+		self.step_result_exit_count = 0;
 		self.record_transaction_event_only = false;
 	}
 
@@ -419,9 +420,9 @@ impl Listener {
 					TracingVersion::EarlyTransact => {
 						// In EarlyTransact mode, EvmEvent::Exit will also fire for this
 						// same frame. Process with StepResult's data (more accurate) and
-						// set flag so EvmEvent::Exit skips the redundant pop.
+						// increment counter so EvmEvent::Exit skips the redundant pop.
 						self.capture_exit(&reason, return_value);
-						self.step_result_exit_handled = true;
+						self.step_result_exit_count += 1;
 					}
 				}
 			}
@@ -640,9 +641,9 @@ impl Listener {
 			} => {
 				self.record_transaction_event_only = false;
 
-				if self.step_result_exit_handled {
+				if self.step_result_exit_count > 0 {
 					// StepResult already processed this exit; skip to avoid double-pop.
-					self.step_result_exit_handled = false;
+					self.step_result_exit_count -= 1;
 				} else {
 					// StepResult was skipped (e.g. precompile call); handle normally.
 					self.flush_precompiles_without_subcalls();

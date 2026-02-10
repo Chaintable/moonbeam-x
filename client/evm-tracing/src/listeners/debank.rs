@@ -2002,4 +2002,116 @@ mod tests {
 			.error
 			.contains("data cost"));
 	}
+
+	// ============ Root Frame gas_used Correctness After Double-Exit Fix ============
+
+	#[test]
+	fn root_gas_used_correct_when_subcall_double_exit() {
+		// Regression test for the double-exit bug:
+		// Without the step_result_exit_count fix, a subcall's EvmEvent::Exit would
+		// erroneously hit the root frame (after StepResult already popped the subcall),
+		// computing root's gas_used with premature gas_remaining ≈ start_gas,
+		// yielding gas_used ≈ 0.
+		//
+		// Timeline:
+		//   1. TransactCall → root frame (gas_limit=100000)
+		//   2. RecordTransaction (cost=21000)
+		//   3. RecordCost → root's start_gas = 79000 (100000 - 21000)
+		//   4. Call → subcall pushed
+		//   5. RecordCost → subcall's start_gas = 70000
+		//   6. RecordCost → subcall's gas_remaining = 60000 (simulates execution)
+		//   7. StepResult(Capture::Exit) → pops subcall (gas_used = 10000)
+		//      — increments step_result_exit_count
+		//   8. EvmEvent::Exit → skipped (count > 0), decrements count
+		//      — BUG path: without fix, this would pop root with gas_remaining still = 79000
+		//   9. RecordCost → root's gas_remaining = 69000 (after subcall returned)
+		//  10. EvmEvent::Exit → root exits normally, gas_used = 79000 - 69000 = 10000
+		let mut listener = Listener::default();
+
+		// 1. TransactCall
+		listener.evm_event(EvmEvent::TransactCall {
+			caller: H160::from_low_u64_be(1),
+			address: H160::from_low_u64_be(100),
+			value: U256::zero(),
+			data: Vec::new(),
+			gas_limit: 100_000u64,
+		});
+
+		// 2. RecordTransaction
+		listener.gasometer_event(GasometerEvent::RecordTransaction {
+			cost: 21_000u64,
+			snapshot: test_snapshot_with_gas(100_000, 0),
+		});
+
+		// 3. Initial Call event (skipped by skip_next_context, same root call context)
+		do_evm_call_event(&mut listener);
+
+		// 4. RecordCost on root: start_gas = 79000
+		listener.gasometer_event(GasometerEvent::RecordCost {
+			cost: 100u64,
+			snapshot: test_snapshot_with_gas(100_000, 21_000), // gas() = 79000
+		});
+
+		// 5. Subcall
+		do_runtime_step_event(&mut listener);
+		do_runtime_call_opcode_event(&mut listener);
+		listener.evm_event(EvmEvent::Call {
+			code_address: H160::from_low_u64_be(200),
+			transfer: None,
+			input: Vec::new(),
+			target_gas: Some(70_000),
+			is_static: false,
+			context: test_context(),
+		});
+
+		// 6. RecordCost on subcall: start_gas = 70000
+		listener.gasometer_event(GasometerEvent::RecordCost {
+			cost: 50u64,
+			snapshot: test_snapshot_with_gas(70_000, 0), // gas() = 70000
+		});
+
+		// 7. RecordCost on subcall: gas_remaining = 60000
+		listener.gasometer_event(GasometerEvent::RecordCost {
+			cost: 100u64,
+			snapshot: test_snapshot_with_gas(70_000, 10_000), // gas() = 60000
+		});
+
+		// 8. StepResult(Capture::Exit) for subcall
+		do_runtime_step_result_exit_event(&mut listener);
+
+		// 9. EvmEvent::Exit for subcall (redundant — should be skipped by fix)
+		do_exit_event(&mut listener);
+
+		// 10. RecordCost on root after subcall returned: gas_remaining = 69000
+		listener.gasometer_event(GasometerEvent::RecordCost {
+			cost: 100u64,
+			snapshot: test_snapshot_with_gas(100_000, 31_000), // gas() = 69000
+		});
+
+		// 11. Root exit
+		do_exit_event(&mut listener);
+		listener.finish_transaction();
+
+		assert_eq!(listener.completed_frames.len(), 1);
+		let root = &listener.completed_frames[0];
+
+		// Root gas = start_gas = 79000
+		assert_eq!(root.gas, 79_000, "root gas (start_gas) should be 79000");
+		// Root gas_remaining was last updated to 69000
+		// Root gas_used = 79000 - 69000 = 10000
+		assert_eq!(
+			root.gas_used, 10_000,
+			"root gas_used should be 10000 (pure execution gas), not 0"
+		);
+		assert!(!root.failed, "root should not be marked as failed");
+
+		// Subcall should also have correct gas
+		assert_eq!(root.calls.len(), 1);
+		let subcall = &root.calls[0];
+		assert_eq!(subcall.gas, 70_000, "subcall gas (start_gas) should be 70000");
+		assert_eq!(
+			subcall.gas_used, 10_000,
+			"subcall gas_used should be 10000"
+		);
+	}
 }

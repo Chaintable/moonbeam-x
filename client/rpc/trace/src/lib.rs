@@ -747,7 +747,17 @@ where
 			Vec<u8>,
 		)> {
 			// Get account basic info (balance, nonce) from Runtime API
-			let account = api.account_basic(substrate_hash, address).ok()?;
+			let account = match api.account_basic(substrate_hash, address) {
+				Ok(account) => account,
+				Err(e) => {
+					log::warn!(
+						target: "tracing",
+						"account_basic failed for {:?} at {:?}: {:?}",
+						address, substrate_hash, e
+					);
+					return None;
+				}
+			};
 
 			// Get account code
 			let code = overrides.account_code_at(substrate_hash, address).unwrap_or_default();

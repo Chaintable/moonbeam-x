@@ -269,6 +269,12 @@ where
 	let mut storage_diff = Vec::new();
 
 	// Process touched accounts
+	log::debug!(
+		target: "tracing",
+		"format_state_diff: touched_accounts count = {}, addresses = {:?}",
+		listener.touched_accounts.len(),
+		listener.touched_accounts
+	);
 	for address in &listener.touched_accounts {
 		if listener.deleted_accounts.contains(address) {
 			continue;
@@ -280,6 +286,12 @@ where
 				new_codes_map.insert(account.code_hash, code);
 			}
 			new_accounts.push(account);
+		} else {
+			log::warn!(
+				target: "tracing",
+				"account_info_fn returned None for touched account {:?}",
+				address
+			);
 		}
 	}
 
@@ -293,7 +305,7 @@ where
 				.iter()
 				.map(|(index, value)| IndexValuePair {
 					index: *index,
-					value: *value,
+					value: U256::from_big_endian(value.as_bytes()),
 				})
 				.collect();
 

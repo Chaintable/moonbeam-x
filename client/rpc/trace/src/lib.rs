@@ -740,6 +740,11 @@ where
 		// Finish the last transaction
 		listener.finish_transaction();
 
+		// Create a fresh runtime API instance for account queries.
+		// The previous `api` instance was used with `substrate_parent_hash` for trace_block,
+		// and Substrate does not allow reusing the same instance for a different block hash.
+		let account_api = client.runtime_api();
+
 		// Create account_info_fn that queries the Runtime API for account state
 		// Returns (NewAccount, code) tuple
 		let account_info_fn = |address: H160| -> Option<(
@@ -747,7 +752,7 @@ where
 			Vec<u8>,
 		)> {
 			// Get account basic info (balance, nonce) from Runtime API
-			let account = match api.account_basic(substrate_hash, address) {
+			let account = match account_api.account_basic(substrate_hash, address) {
 				Ok(account) => account,
 				Err(e) => {
 					log::warn!(

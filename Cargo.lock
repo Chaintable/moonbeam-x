@@ -7874,6 +7874,7 @@ dependencies = [
  "parity-scale-codec",
  "rlp 0.6.1",
  "serde",
+ "sha3",
  "sp-runtime",
  "sp-std",
 ]

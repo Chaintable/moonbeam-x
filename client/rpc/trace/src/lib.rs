@@ -775,7 +775,7 @@ where
 			};
 
 			let new_account = moonbeam_client_evm_tracing::types::block::NewAccount {
-				address,
+				address: H256::zero(), // Will be set by formatter via address_to_hash
 				balance: account.balance,
 				nonce: account.nonce.as_u64(),
 				code_hash,

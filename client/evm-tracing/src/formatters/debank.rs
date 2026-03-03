@@ -18,7 +18,7 @@
 
 use crate::listeners::debank::{CallFrame, DebankCallType, Listener};
 use crate::types::block::{
-	AccountStorageDiff, BlockStorageDiff, IndexValuePair, NewAccount, NewCode,
+	address_to_hash, AccountStorageDiff, BlockStorageDiff, IndexValuePair, NewAccount, NewCode,
 };
 use ethereum_types::{H160, H256, U256};
 use std::collections::HashMap;
@@ -280,7 +280,9 @@ where
 			continue;
 		}
 
-		if let Some((account, code)) = account_info_fn(*address) {
+		if let Some((mut account, code)) = account_info_fn(*address) {
+			// Convert address to H256 via keccak256
+			account.address = address_to_hash(address);
 			// Track new code for created contracts
 			if listener.created_accounts.contains(address) && !code.is_empty() {
 				new_codes_map.insert(account.code_hash, code);
@@ -312,7 +314,10 @@ where
 			values.sort_by_key(|p| p.index);
 
 			if !values.is_empty() {
-				storage_diff.push(AccountStorageDiff { address, values });
+				storage_diff.push(AccountStorageDiff {
+					address: address_to_hash(&address),
+					values,
+				});
 			}
 		}
 	}
@@ -326,7 +331,8 @@ where
 		.collect();
 	new_codes.sort_by_key(|c| c.code_hash);
 
-	let mut deleted_accounts: Vec<H160> = listener.deleted_accounts.iter().cloned().collect();
+	let mut deleted_accounts: Vec<H256> =
+		listener.deleted_accounts.iter().map(address_to_hash).collect();
 	deleted_accounts.sort();
 
 	BlockStorageDiff {

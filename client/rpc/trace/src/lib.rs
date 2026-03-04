@@ -451,10 +451,7 @@ where
 			timestamp: eth_block.header.timestamp,
 			extra_data: eth_block.header.extra_data.clone(),
 			mix_hash: eth_block.header.mix_hash,
-			nonce: {
-				let nonce_bytes = eth_block.header.nonce.0;
-				u64::from_be_bytes(nonce_bytes)
-			},
+			nonce: eth_block.header.nonce,
 			base_fee_per_gas: None, // TODO: Can be obtained from Runtime API if needed
 			hash: eth_block_hash,
 		};

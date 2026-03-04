@@ -16,7 +16,7 @@
 
 //! Debank data types for trace_debankBlock RPC output.
 
-use ethereum_types::{H160, H256, U256};
+use ethereum_types::{H160, H256, H64, U256};
 use serde::{Deserialize, Serialize};
 
 /// Debank block information.
@@ -169,7 +169,7 @@ pub struct DebankBlockHeader {
 	#[serde(serialize_with = "serialize_bytes")]
 	pub extra_data: Vec<u8>,
 	pub mix_hash: H256,
-	pub nonce: u64,
+	pub nonce: H64,
 	pub base_fee_per_gas: Option<u64>,
 	pub hash: H256,
 }

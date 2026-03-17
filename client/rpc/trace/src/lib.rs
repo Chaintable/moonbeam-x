@@ -103,6 +103,13 @@ type TxsTraceRes = Result<Vec<TransactionTrace>, String>;
 /// when multiple waiters are waiting for the same block.
 type SharedTxsTraceRes = Result<Arc<Vec<TransactionTrace>>, Arc<String>>;
 
+/// Keccak256 hash of an empty trie (RLP of empty string).
+/// Used as the parent state root for the genesis block.
+const EMPTY_ROOT_HASH: H256 = H256([
+	0x56, 0xe8, 0x1f, 0x17, 0x1b, 0xcc, 0x55, 0xa6, 0xff, 0x83, 0x45, 0xe6, 0x92, 0xc0, 0xf8, 0x6e,
+	0x5b, 0x48, 0xe0, 0x1b, 0x99, 0x6c, 0xad, 0xc0, 0x01, 0x62, 0x2f, 0xb5, 0xe3, 0x63, 0xb4, 0x21,
+]);
+
 /// Log target for trace cache operations
 const CACHE_LOG_TARGET: &str = "trace-cache";
 
@@ -334,24 +341,19 @@ where
 		let (substrate_hash, block_height) = match block_id {
 			RequestBlockId::Hash(eth_hash) => {
 				// Use frontier backend to map Ethereum block hash → substrate hash
-				let substrate_hash =
-					fc_rpc::frontier_backend_client::load_hash::<B, C>(
-						self.client.as_ref(),
-						self.frontier_backend.as_ref(),
-						eth_hash,
-					)
-					.await
-					.map_err(|e| format!("Failed to load hash: {:?}", e))?
-					.ok_or_else(|| {
-						format!("Block with eth hash {:?} not found", eth_hash)
-					})?;
+				let substrate_hash = fc_rpc::frontier_backend_client::load_hash::<B, C>(
+					self.client.as_ref(),
+					self.frontier_backend.as_ref(),
+					eth_hash,
+				)
+				.await
+				.map_err(|e| format!("Failed to load hash: {:?}", e))?
+				.ok_or_else(|| format!("Block with eth hash {:?} not found", eth_hash))?;
 				let number = *self
 					.client
 					.header(substrate_hash)
 					.map_err(|e| format!("Failed to get header: {:?}", e))?
-					.ok_or_else(|| {
-						format!("Block header not found for hash {:?}", substrate_hash)
-					})?
+					.ok_or_else(|| format!("Block header not found for hash {:?}", substrate_hash))?
 					.number();
 				(substrate_hash, number)
 			}
@@ -371,9 +373,7 @@ where
 				let hash = self
 					.client
 					.hash(number)
-					.map_err(|e| {
-						format!("Error when fetching block {} hash: {:?}", number, e)
-					})?
+					.map_err(|e| format!("Error when fetching block {} hash: {:?}", number, e))?
 					.ok_or_else(|| format!("Block with height {} doesn't exist", number))?;
 				(hash, number)
 			}
@@ -491,7 +491,10 @@ where
 					.unwrap_or(0),
 				input: rpc_tx.input.0.clone(),
 				nonce: rpc_tx.nonce.as_u64(),
-				transaction_index: rpc_tx.transaction_index.map(|i| i.as_u64()).unwrap_or(idx as u64),
+				transaction_index: rpc_tx
+					.transaction_index
+					.map(|i| i.as_u64())
+					.unwrap_or(idx as u64),
 				value: rpc_tx.value,
 			};
 			debank_txs.push(debank_tx);
@@ -543,7 +546,7 @@ where
 						.unwrap_or(substrate_hash),
 				)
 				.map(|b| b.header.state_root)
-				.unwrap_or(H256::zero());
+				.unwrap_or(eth_block.header.state_root);
 			let state_diff = debank::state_diff::empty_state_diff(
 				eth_block.header.state_root,
 				parent_state_root,
@@ -582,7 +585,7 @@ where
 			.overrides
 			.current_block(parent_substrate_hash)
 			.map(|b| b.header.state_root)
-			.unwrap_or(H256::zero());
+			.expect("Parent block state root should exist for non-genesis blocks");
 
 		// Use the new Debank listener to trace the block directly
 		let client = Arc::clone(&self.client);
@@ -719,11 +722,11 @@ where
 		genesis_hash: H256,
 		state_root: H256,
 	) -> Result<debank::types::BlockStorageDiff, String> {
-		use sc_client_api::StorageKey;
-		use sp_core::twox_128;
 		use moonbeam_client_evm_tracing::types::block::{
 			address_to_hash, AccountStorageDiff, IndexValuePair, NewAccount, NewCode,
 		};
+		use sc_client_api::StorageKey;
+		use sp_core::twox_128;
 
 		let api = client.runtime_api();
 
@@ -787,10 +790,8 @@ where
 		// Key layout after prefix (32 bytes):
 		//   blake2_128(addr) (16) + addr (20) + blake2_128(slot) (16) + slot (32)
 		let storages_prefix_len = account_storages_prefix.len();
-		let mut storage_changes: std::collections::BTreeMap<
-			H160,
-			Vec<IndexValuePair>,
-		> = std::collections::BTreeMap::new();
+		let mut storage_changes: std::collections::BTreeMap<H160, Vec<IndexValuePair>> =
+			std::collections::BTreeMap::new();
 
 		for (key, value) in storage_iter {
 			let key_bytes = key.0;
@@ -830,11 +831,8 @@ where
 			let code = overrides
 				.account_code_at(genesis_hash, *address)
 				.unwrap_or_default();
-			let code_hash = H256::from_slice(&keccak_256(if code.is_empty() {
-				&[]
-			} else {
-				&code
-			}));
+			let code_hash =
+				H256::from_slice(&keccak_256(if code.is_empty() { &[] } else { &code }));
 
 			// Track code for accounts with non-empty code
 			if !code.is_empty() {
@@ -872,7 +870,7 @@ where
 
 		Ok(debank::types::BlockStorageDiff {
 			hash: state_root,
-			parent_hash: H256::zero(),
+			parent_hash: EMPTY_ROOT_HASH,
 			new_accounts,
 			deleted_accounts: Vec::new(),
 			storage_diff,
@@ -992,7 +990,9 @@ where
 			};
 
 			// Get account code
-			let code = overrides.account_code_at(substrate_hash, address).unwrap_or_default();
+			let code = overrides
+				.account_code_at(substrate_hash, address)
+				.unwrap_or_default();
 
 			// Calculate code hash using keccak256
 			let code_hash = if code.is_empty() {

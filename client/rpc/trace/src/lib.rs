@@ -51,7 +51,7 @@ use sp_core::keccak_256;
 use sp_runtime::traits::{BlakeTwo256, Block as BlockT, Header as HeaderT};
 use substrate_prometheus_endpoint::Registry as PrometheusRegistry;
 
-use ethereum_types::{H160, H256};
+use ethereum_types::{H160, H256, U256};
 use fc_rpc::{lru_cache::LRUCacheByteLimited, Eth, EthConfig};
 use fc_rpc_core::types::{BlockNumberOrHash, BlockTransactions, Receipt, RichBlock, Transaction};
 use fc_storage::StorageOverride;
@@ -497,10 +497,57 @@ where
 			debank_txs.push(debank_tx);
 		}
 
-		// For genesis block, return early with empty traces
+		// For genesis block, return early with genesis state diff (no traces)
 		if block_height == 0 {
-			let state_diff =
-				debank::state_diff::empty_state_diff(eth_block.header.state_root, H256::zero());
+			let client = Arc::clone(&self.client);
+			let overrides = Arc::clone(&self.overrides);
+			let genesis_hash = substrate_hash;
+			let state_root = eth_block.header.state_root;
+
+			let state_diff = tokio::task::spawn_blocking(move || {
+				Self::build_genesis_state_diff(client, overrides, genesis_hash, state_root)
+			})
+			.await
+			.map_err(|e| format!("Failed to spawn genesis state diff task: {:?}", e))?
+			.map_err(|e| format!("Failed to build genesis state diff: {}", e))?;
+
+			let block_file = BlockFile {
+				block: debank_block,
+				transactions: debank_txs,
+				events: Vec::new(),
+				traces: Vec::new(),
+				error_events: Vec::new(),
+				error_traces: Vec::new(),
+				storage_contracts: Vec::new(),
+			};
+			let validation_hash = block_file.validation().validation_hash;
+			return Ok(DebankOutput {
+				block_file,
+				header: debank_header,
+				state_diff: debank::state_diff::encode_state_diff(&state_diff),
+				validation_hash,
+			});
+		}
+
+		// For empty blocks (no transactions), skip tracing and return early
+		if rpc_transactions.is_empty() {
+			// Get parent block's state_root for the state diff
+			let parent_state_root = self
+				.overrides
+				.current_block(
+					self.client
+						.header(substrate_hash)
+						.ok()
+						.flatten()
+						.map(|h| *h.parent_hash())
+						.unwrap_or(substrate_hash),
+				)
+				.map(|b| b.header.state_root)
+				.unwrap_or(H256::zero());
+			let state_diff = debank::state_diff::empty_state_diff(
+				eth_block.header.state_root,
+				parent_state_root,
+			);
 			let block_file = BlockFile {
 				block: debank_block,
 				transactions: debank_txs,
@@ -521,7 +568,21 @@ where
 
 		// Get tx hashes for formatting (using rpc_transactions from EthApi)
 		let tx_hashes: Vec<H256> = rpc_transactions.iter().map(|tx| tx.hash).collect();
-		let parent_hash = eth_block.header.parent_hash;
+
+		// Compute state roots for BlockStorageDiff
+		let state_root = eth_block.header.state_root;
+		let parent_substrate_hash = self
+			.client
+			.header(substrate_hash)
+			.ok()
+			.flatten()
+			.map(|h| *h.parent_hash())
+			.unwrap_or(substrate_hash);
+		let parent_state_root = self
+			.overrides
+			.current_block(parent_substrate_hash)
+			.map(|b| b.header.state_root)
+			.unwrap_or(H256::zero());
 
 		// Use the new Debank listener to trace the block directly
 		let client = Arc::clone(&self.client);
@@ -535,8 +596,8 @@ where
 				backend,
 				substrate_hash,
 				overrides,
-				eth_block_hash,
-				parent_hash,
+				state_root,
+				parent_state_root,
 				tx_hashes,
 			)
 		})
@@ -650,6 +711,175 @@ where
 		})
 	}
 
+	/// Build genesis state diff by enumerating all EVM accounts and storage at block 0.
+	/// Since genesis has no parent state, all accounts are "new".
+	fn build_genesis_state_diff(
+		client: Arc<C>,
+		overrides: Arc<dyn StorageOverride<B>>,
+		genesis_hash: H256,
+		state_root: H256,
+	) -> Result<debank::types::BlockStorageDiff, String> {
+		use sc_client_api::StorageKey;
+		use sp_core::twox_128;
+		use moonbeam_client_evm_tracing::types::block::{
+			address_to_hash, AccountStorageDiff, IndexValuePair, NewAccount, NewCode,
+		};
+
+		let api = client.runtime_api();
+
+		// Storage prefix for EVM::AccountCodes (Blake2_128Concat hasher)
+		let evm_prefix = twox_128(b"EVM");
+		let codes_prefix = twox_128(b"AccountCodes");
+		let account_codes_prefix: Vec<u8> =
+			[evm_prefix.as_slice(), codes_prefix.as_slice()].concat();
+
+		// Iterate all EVM AccountCodes entries to discover accounts with code
+		let codes_iter = client
+			.storage_pairs(
+				genesis_hash,
+				Some(&StorageKey(account_codes_prefix.clone())),
+				None,
+			)
+			.map_err(|e| format!("Failed to iterate AccountCodes: {:?}", e))?;
+
+		// Collect (address, code) pairs
+		// Blake2_128Concat key layout: prefix (32 bytes) + blake2_128(addr) (16 bytes) + addr (20 bytes)
+		let prefix_len = account_codes_prefix.len(); // 32
+		let mut address_set: std::collections::BTreeSet<H160> = std::collections::BTreeSet::new();
+		let mut code_map: std::collections::HashMap<H160, Vec<u8>> =
+			std::collections::HashMap::new();
+
+		for (key, value) in codes_iter {
+			let key_bytes = key.0;
+			// After the 32-byte prefix: 16 bytes blake2_128 hash + 20 bytes raw address
+			if key_bytes.len() < prefix_len + 16 + 20 {
+				continue;
+			}
+			let addr_start = prefix_len + 16;
+			let addr_bytes = &key_bytes[addr_start..addr_start + 20];
+			let address = H160::from_slice(addr_bytes);
+			// Decode the code from SCALE-encoded Vec<u8>
+			let code: Vec<u8> =
+				parity_scale_codec::Decode::decode(&mut &value.0[..]).unwrap_or_default();
+			if !code.is_empty() {
+				code_map.insert(address, code);
+			}
+			address_set.insert(address);
+		}
+
+		// Also discover accounts with balance but no code by iterating System::Account
+		// However, not all substrate accounts are EVM accounts. We rely on EthereumRuntimeRPCApi
+		// to check. For genesis, the endowed accounts are also in EVM state.
+		// A simpler approach: also iterate EVM::AccountStorages for any addresses with storage
+		let storages_prefix = twox_128(b"AccountStorages");
+		let account_storages_prefix: Vec<u8> =
+			[evm_prefix.as_slice(), storages_prefix.as_slice()].concat();
+
+		let storage_iter = client
+			.storage_pairs(
+				genesis_hash,
+				Some(&StorageKey(account_storages_prefix.clone())),
+				None,
+			)
+			.map_err(|e| format!("Failed to iterate AccountStorages: {:?}", e))?;
+
+		// AccountStorages is a DoubleMap: Blake2_128Concat(H160) + Blake2_128Concat(H256)
+		// Key layout after prefix (32 bytes):
+		//   blake2_128(addr) (16) + addr (20) + blake2_128(slot) (16) + slot (32)
+		let storages_prefix_len = account_storages_prefix.len();
+		let mut storage_changes: std::collections::BTreeMap<
+			H160,
+			Vec<IndexValuePair>,
+		> = std::collections::BTreeMap::new();
+
+		for (key, value) in storage_iter {
+			let key_bytes = key.0;
+			if key_bytes.len() < storages_prefix_len + 16 + 20 + 16 + 32 {
+				continue;
+			}
+			let addr_start = storages_prefix_len + 16;
+			let address = H160::from_slice(&key_bytes[addr_start..addr_start + 20]);
+			let slot_start = addr_start + 20 + 16;
+			let slot = H256::from_slice(&key_bytes[slot_start..slot_start + 32]);
+			// Decode the storage value (SCALE-encoded H256)
+			let val: H256 =
+				parity_scale_codec::Decode::decode(&mut &value.0[..]).unwrap_or_default();
+
+			address_set.insert(address);
+			storage_changes
+				.entry(address)
+				.or_default()
+				.push(IndexValuePair {
+					index: slot,
+					value: U256::from_big_endian(val.as_bytes()),
+				});
+		}
+
+		// Build new_accounts and new_codes
+		let mut new_accounts: Vec<NewAccount> = Vec::new();
+		let mut new_codes_map: std::collections::HashMap<H256, Vec<u8>> =
+			std::collections::HashMap::new();
+
+		for address in &address_set {
+			// Get account basic info (balance, nonce) from Runtime API
+			let account = api
+				.account_basic(genesis_hash, *address)
+				.map_err(|e| format!("account_basic failed for {:?}: {:?}", address, e))?;
+
+			// Get code and compute code hash
+			let code = overrides
+				.account_code_at(genesis_hash, *address)
+				.unwrap_or_default();
+			let code_hash = H256::from_slice(&keccak_256(if code.is_empty() {
+				&[]
+			} else {
+				&code
+			}));
+
+			// Track code for accounts with non-empty code
+			if !code.is_empty() {
+				new_codes_map.insert(code_hash, code);
+			}
+
+			new_accounts.push(NewAccount {
+				address: address_to_hash(address),
+				balance: account.balance,
+				nonce: account.nonce.as_u64(),
+				code_hash,
+			});
+		}
+
+		// Sort for deterministic output
+		new_accounts.sort_by_key(|a| a.address);
+
+		let mut new_codes: Vec<NewCode> = new_codes_map
+			.into_iter()
+			.map(|(code_hash, code)| NewCode { code_hash, code })
+			.collect();
+		new_codes.sort_by_key(|c| c.code_hash);
+
+		// Build storage_diff
+		let mut storage_diff: Vec<AccountStorageDiff> = Vec::new();
+		for (address, mut values) in storage_changes {
+			values.sort_by_key(|p| p.index);
+			if !values.is_empty() {
+				storage_diff.push(AccountStorageDiff {
+					address: address_to_hash(&address),
+					values,
+				});
+			}
+		}
+
+		Ok(debank::types::BlockStorageDiff {
+			hash: state_root,
+			parent_hash: H256::zero(),
+			new_accounts,
+			deleted_accounts: Vec::new(),
+			storage_diff,
+			new_codes,
+		})
+	}
+
 	/// Synchronous block tracing using the Debank listener.
 	/// Returns the formatted Debank output including account info for state diff.
 	fn trace_debank_block_sync(
@@ -657,8 +887,8 @@ where
 		backend: Arc<BE>,
 		substrate_hash: H256,
 		overrides: Arc<dyn StorageOverride<B>>,
-		eth_block_hash: H256,
-		parent_hash: H256,
+		state_root: H256,
+		parent_state_root: H256,
 		tx_hashes: Vec<H256>,
 	) -> Result<moonbeam_client_evm_tracing::formatters::debank::DebankBlockOutput, String> {
 		let api = client.runtime_api();
@@ -784,8 +1014,8 @@ where
 		// Format the listener output to Debank format
 		let formatted = DebankFormatter::format(
 			listener,
-			eth_block_hash,
-			parent_hash,
+			state_root,
+			parent_state_root,
 			&tx_hashes,
 			account_info_fn,
 		);

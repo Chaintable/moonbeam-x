@@ -20,10 +20,10 @@ use super::types::BlockStorageDiff;
 use ethereum_types::H256;
 
 /// Create an empty state diff (for blocks with no state changes or genesis).
-pub fn empty_state_diff(block_hash: H256, parent_hash: H256) -> BlockStorageDiff {
+pub fn empty_state_diff(state_root: H256, parent_state_root: H256) -> BlockStorageDiff {
 	BlockStorageDiff {
-		hash: block_hash,
-		parent_hash,
+		hash: state_root,
+		parent_hash: parent_state_root,
 		new_accounts: Vec::new(),
 		deleted_accounts: Vec::new(),
 		storage_diff: Vec::new(),

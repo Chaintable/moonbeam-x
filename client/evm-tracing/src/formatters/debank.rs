@@ -80,8 +80,8 @@ impl Formatter {
 	///   Returns (NewAccount, code) where code is the contract bytecode (empty for EOAs)
 	pub fn format<F>(
 		mut listener: Listener,
-		block_hash: H256,
-		parent_hash: H256,
+		state_root: H256,
+		parent_state_root: H256,
 		tx_hashes: &[H256],
 		account_info_fn: F,
 	) -> DebankBlockOutput
@@ -125,7 +125,7 @@ impl Formatter {
 		}
 
 		// Build state diff
-		let state_diff = format_state_diff(&listener, block_hash, parent_hash, account_info_fn);
+		let state_diff = format_state_diff(&listener, state_root, parent_state_root, account_info_fn);
 
 		// Collect storage contracts
 		let storage_contracts: Vec<H160> = listener.storage_contracts.into_iter().collect();
@@ -257,8 +257,8 @@ fn process_frame_children(
 
 fn format_state_diff<F>(
 	listener: &Listener,
-	block_hash: H256,
-	parent_hash: H256,
+	state_root: H256,
+	parent_state_root: H256,
 	account_info_fn: F,
 ) -> BlockStorageDiff
 where
@@ -336,8 +336,8 @@ where
 	deleted_accounts.sort();
 
 	BlockStorageDiff {
-		hash: block_hash,
-		parent_hash,
+		hash: state_root,
+		parent_hash: parent_state_root,
 		new_accounts,
 		deleted_accounts,
 		storage_diff,

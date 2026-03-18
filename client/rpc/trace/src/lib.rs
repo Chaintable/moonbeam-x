@@ -40,7 +40,7 @@ use tokio::{
 };
 use tracing::{instrument, Instrument};
 
-use sc_client_api::backend::{Backend, StateBackend, StorageProvider};
+use sc_client_api::backend::{Backend, StateBackend, StorageProvider, TrieCacheContext};
 use sc_service::SpawnTaskHandle;
 use sp_api::{ApiExt, Core, ProvideRuntimeApi};
 use sp_block_builder::BlockBuilder;
@@ -770,10 +770,35 @@ where
 			address_set.insert(address);
 		}
 
-		// Also discover accounts with balance but no code by iterating System::Account
-		// However, not all substrate accounts are EVM accounts. We rely on EthereumRuntimeRPCApi
-		// to check. For genesis, the endowed accounts are also in EVM state.
-		// A simpler approach: also iterate EVM::AccountStorages for any addresses with storage
+		// Also discover accounts with balance from System::Account
+		// These are Substrate-level accounts (collators, treasury, etc.) that have
+		// balances visible via eth_getBalance but no EVM code or storage.
+		let system_account_prefix: Vec<u8> = [
+			twox_128(b"System").as_slice(),
+			twox_128(b"Account").as_slice(),
+		]
+		.concat();
+		let system_prefix_len = system_account_prefix.len(); // 32
+
+		let system_iter = client
+			.storage_pairs(
+				genesis_hash,
+				Some(&StorageKey(system_account_prefix)),
+				None,
+			)
+			.map_err(|e| format!("Failed to iterate System::Account: {:?}", e))?;
+
+		for (key, _value) in system_iter {
+			let key_bytes = key.0;
+			// Blake2_128Concat: prefix(32) + blake2_128(16) + account_id(20)
+			if key_bytes.len() >= system_prefix_len + 16 + 20 {
+				let addr_start = system_prefix_len + 16;
+				let address = H160::from_slice(&key_bytes[addr_start..addr_start + 20]);
+				address_set.insert(address);
+			}
+		}
+
+		// Discover EVM storage entries
 		let storages_prefix = twox_128(b"AccountStorages");
 		let account_storages_prefix: Vec<u8> =
 			[evm_prefix.as_slice(), storages_prefix.as_slice()].concat();
@@ -964,6 +989,46 @@ where
 
 		// Finish the last transaction
 		listener.finish_transaction();
+
+		// Extract storage changes from the overlay produced by trace_block.
+		// This captures ALL storage modifications including Substrate-level changes
+		// (staking rewards, XCM transfers, etc.) that the EVM tracer doesn't see.
+		{
+			use sp_core::twox_128;
+			let system_account_prefix: Vec<u8> = [
+				twox_128(b"System").as_slice(),
+				twox_128(b"Account").as_slice(),
+			]
+			.concat();
+			let prefix_len = system_account_prefix.len(); // 32 bytes
+
+			let state = backend
+				.state_at(substrate_parent_hash, TrieCacheContext::Untrusted)
+				.map_err(|e| format!("Failed to get state at parent: {:?}", e))?;
+			if let Ok(storage_changes) =
+				api.into_storage_changes(&state, substrate_parent_hash)
+			{
+				for (key, value) in &storage_changes.main_storage_changes {
+					// Filter for System::Account keys that were modified (not deleted)
+					if key.starts_with(&system_account_prefix) && value.is_some() {
+						// Blake2_128Concat key: prefix(32) + blake2_128(16) + address(20)
+						if key.len() >= prefix_len + 16 + 20 {
+							let addr_start = prefix_len + 16;
+							let address =
+								H160::from_slice(&key[addr_start..addr_start + 20]);
+							listener.touched_accounts.insert(address);
+						}
+					}
+				}
+			} else {
+				log::warn!(
+					target: "tracing",
+					"Failed to extract storage changes for block {}, \
+					 substrate-only balance changes may be missing from state_diff",
+					height
+				);
+			}
+		}
 
 		// Create a fresh runtime API instance for account queries.
 		// The previous `api` instance was used with `substrate_parent_hash` for trace_block,

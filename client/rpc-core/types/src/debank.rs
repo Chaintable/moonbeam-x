@@ -71,7 +71,6 @@ pub struct DebankEvent {
 	pub topics: Vec<String>,
 	#[serde(serialize_with = "serialize_bytes")]
 	pub data: Vec<u8>,
-	pub tx_id: H256,
 	pub parent_trace_id: String,
 	pub pos_in_parent_trace: usize,
 	pub idx: usize,
@@ -132,9 +131,9 @@ impl BlockFile {
 	/// Calculate the validation hash for this block file.
 	pub fn validation(&self) -> BlockValidation {
 		let mut ids = Vec::new();
-		ids.push(format!("{:?}", self.block.id));
+		ids.push(format_h256(&self.block.id));
 		for transaction in self.transactions.iter() {
-			ids.push(format!("{:?}", transaction.id));
+			ids.push(format_h256(&transaction.id));
 		}
 		for event in self.events.iter() {
 			ids.push(event.id.clone());
@@ -147,6 +146,12 @@ impl BlockFile {
 			is_fork: false,
 		}
 	}
+}
+
+/// Format H256 as full lowercase hex with "0x" prefix, matching Go's
+/// `common.Hash.Hex()` output used for `Block.ID` / `Transaction.ID`.
+fn format_h256(h: &H256) -> String {
+	format!("0x{}", hex::encode(h.as_bytes()))
 }
 
 /// Block header in Debank format.
@@ -162,14 +167,23 @@ pub struct DebankBlockHeader {
 	#[serde(serialize_with = "serialize_bytes")]
 	pub logs_bloom: Vec<u8>,
 	pub difficulty: U256,
+	#[serde(with = "hex_quantity_u64")]
 	pub number: u64,
+	#[serde(with = "hex_quantity_u64")]
 	pub gas_limit: u64,
+	#[serde(with = "hex_quantity_u64")]
 	pub gas_used: u64,
+	#[serde(with = "hex_quantity_u64")]
 	pub timestamp: u64,
 	#[serde(serialize_with = "serialize_bytes")]
 	pub extra_data: Vec<u8>,
 	pub mix_hash: H256,
 	pub nonce: H64,
+	#[serde(
+		default,
+		with = "hex_quantity_u64::opt",
+		skip_serializing_if = "Option::is_none"
+	)]
 	pub base_fee_per_gas: Option<u64>,
 	pub hash: H256,
 }
@@ -185,18 +199,27 @@ pub struct DebankOutput {
 	pub validation_hash: i64,
 }
 
-/// Calculate validation hash from a list of IDs.
+/// Calculate validation hash from a list of IDs, matching Go's
+/// `types.CalcValidationHash`: SHA1 each id, interpret digest as a big integer,
+/// sum them, then return the last 6 decimal digits.
 pub fn calc_validation_hash(ids: &[String]) -> i64 {
-	// Simple hash calculation for validation
-	// Uses a basic additive hash over the string bytes
-	let mut sum: u64 = 0;
+	use sha1::{Digest, Sha1};
+
+	let mut sum = U256::zero();
 	for id in ids {
-		for byte in id.bytes() {
-			sum = sum.wrapping_add(byte as u64);
-		}
+		let mut hasher = Sha1::new();
+		hasher.update(id.as_bytes());
+		let digest = hasher.finalize();
+		let v = U256::from_big_endian(&digest);
+		sum = sum.overflowing_add(v).0;
 	}
-	// Take last 6 digits
-	(sum % 1_000_000) as i64
+	let s = sum.to_string();
+	let tail = if s.len() > 6 {
+		&s[s.len() - 6..]
+	} else {
+		s.as_str()
+	};
+	tail.parse::<i64>().unwrap_or(0)
 }
 
 /// Calculate debank ID using MD5 hash.
@@ -217,4 +240,62 @@ where
 {
 	let hex_string = format!("0x{}", hex::encode(bytes));
 	serializer.serialize_str(&hex_string)
+}
+
+/// Serde module for u64 using Go's `hexutil.Uint64` convention:
+/// "0x"-prefixed lowercase hex with no leading zeros (zero is "0x0").
+mod hex_quantity_u64 {
+	use serde::{Deserialize, Deserializer, Serializer};
+
+	pub fn serialize<S: Serializer>(value: &u64, serializer: S) -> Result<S::Ok, S::Error> {
+		serializer.serialize_str(&format!("0x{value:x}"))
+	}
+
+	pub fn deserialize<'de, D: Deserializer<'de>>(deserializer: D) -> Result<u64, D::Error> {
+		let s = String::deserialize(deserializer)?;
+		let stripped = s.strip_prefix("0x").unwrap_or(&s);
+		u64::from_str_radix(stripped, 16).map_err(serde::de::Error::custom)
+	}
+
+	pub mod opt {
+		use serde::{Deserialize, Deserializer, Serializer};
+
+		pub fn serialize<S: Serializer>(
+			value: &Option<u64>,
+			serializer: S,
+		) -> Result<S::Ok, S::Error> {
+			match value {
+				Some(v) => serializer.serialize_str(&format!("0x{v:x}")),
+				None => serializer.serialize_none(),
+			}
+		}
+
+		pub fn deserialize<'de, D: Deserializer<'de>>(
+			deserializer: D,
+		) -> Result<Option<u64>, D::Error> {
+			let opt: Option<String> = Option::deserialize(deserializer)?;
+			match opt {
+				Some(s) => {
+					let stripped = s.strip_prefix("0x").unwrap_or(&s);
+					let v = u64::from_str_radix(stripped, 16)
+						.map_err(serde::de::Error::custom)?;
+					Ok(Some(v))
+				}
+				None => Ok(None),
+			}
+		}
+	}
+}
+
+#[cfg(test)]
+mod tests {
+	use super::*;
+
+	#[test]
+	fn calc_validation_hash_matches_go_pipeline() {
+		// Mirrors pipeline/types/block_file_test.go with ids ["abcd", "efgh"]:
+		// SHA1-sum last 6 decimal digits = 217265.
+		let ids = vec!["abcd".to_string(), "efgh".to_string()];
+		assert_eq!(calc_validation_hash(&ids), 217265);
+	}
 }

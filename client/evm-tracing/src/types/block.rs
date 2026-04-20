@@ -112,7 +112,8 @@ pub enum TransactionTraceResult {
 #[derive(Clone, Eq, PartialEq, Debug, Encode, Decode, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct NewAccount {
-	pub address: H160,
+	#[serde(serialize_with = "h256_0x_serialize")]
+	pub address: H256,
 	#[serde(serialize_with = "u256_0x_serialize")]
 	pub balance: U256,
 	pub nonce: u64,
@@ -136,15 +137,16 @@ pub struct NewCode {
 pub struct IndexValuePair {
 	#[serde(serialize_with = "h256_0x_serialize")]
 	pub index: H256,
-	#[serde(serialize_with = "h256_0x_serialize")]
-	pub value: H256,
+	#[serde(serialize_with = "u256_0x_serialize")]
+	pub value: U256,
 }
 
 /// Storage diff for a single account
 #[derive(Clone, Eq, PartialEq, Debug, Encode, Decode, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AccountStorageDiff {
-	pub address: H160,
+	#[serde(serialize_with = "h256_0x_serialize")]
+	pub address: H256,
 	pub values: Vec<IndexValuePair>,
 }
 
@@ -157,9 +159,16 @@ pub struct BlockStorageDiff {
 	#[serde(serialize_with = "h256_0x_serialize")]
 	pub parent_hash: H256,
 	pub new_accounts: Vec<NewAccount>,
-	pub deleted_accounts: Vec<H160>,
+	pub deleted_accounts: Vec<H256>,
 	pub storage_diff: Vec<AccountStorageDiff>,
 	pub new_codes: Vec<NewCode>,
+}
+
+/// Convert H160 address to H256 via keccak256 hash.
+/// Go consumer uses common.Hash (32 bytes) for address fields.
+pub fn address_to_hash(address: &H160) -> H256 {
+	use sha3::{Digest, Keccak256};
+	H256::from_slice(&Keccak256::digest(address.as_bytes()))
 }
 
 // RLP encoding implementations for state diff types
@@ -207,5 +216,189 @@ impl Encodable for BlockStorageDiff {
 		s.append_list(&self.deleted_accounts);
 		s.append_list(&self.storage_diff);
 		s.append_list(&self.new_codes);
+	}
+}
+
+#[cfg(test)]
+mod rlp_compat_tests {
+	use super::*;
+	use alloy_primitives::{Bytes, B256, U256 as AlloyU256};
+	use alloy_rlp::Decodable;
+
+	/// Mirror types using alloy-rlp derive macros.
+	/// These match the Go consumer's types where addresses are common.Hash (32 bytes).
+
+	#[derive(alloy_rlp::RlpDecodable, Debug, PartialEq)]
+	struct AlloyNewAccount {
+		address: B256,
+		balance: AlloyU256,
+		nonce: u64,
+		code_hash: B256,
+	}
+
+	#[derive(alloy_rlp::RlpDecodable, Debug, PartialEq)]
+	struct AlloyNewCode {
+		code_hash: B256,
+		code: Bytes,
+	}
+
+	#[derive(alloy_rlp::RlpDecodable, Debug, PartialEq)]
+	struct AlloyIndexValuePair {
+		index: B256,
+		value: AlloyU256,
+	}
+
+	#[derive(alloy_rlp::RlpDecodable, Debug, PartialEq)]
+	struct AlloyAccountStorageDiff {
+		address: B256,
+		values: Vec<AlloyIndexValuePair>,
+	}
+
+	#[derive(alloy_rlp::RlpDecodable, Debug, PartialEq)]
+	struct AlloyBlockStorageDiff {
+		hash: B256,
+		parent_hash: B256,
+		new_accounts: Vec<AlloyNewAccount>,
+		deleted_accounts: Vec<B256>,
+		storage_diff: Vec<AlloyAccountStorageDiff>,
+		new_codes: Vec<AlloyNewCode>,
+	}
+
+	#[test]
+	fn rlp_alloy_compat_empty_diff() {
+		let diff = BlockStorageDiff {
+			hash: H256::from_low_u64_be(1),
+			parent_hash: H256::from_low_u64_be(2),
+			new_accounts: vec![],
+			deleted_accounts: vec![],
+			storage_diff: vec![],
+			new_codes: vec![],
+		};
+
+		let encoded = rlp::encode(&diff);
+		let decoded = AlloyBlockStorageDiff::decode(&mut encoded.as_ref())
+			.expect("alloy-rlp should decode empty BlockStorageDiff");
+
+		assert_eq!(decoded.hash, B256::from(diff.hash.0));
+		assert_eq!(decoded.parent_hash, B256::from(diff.parent_hash.0));
+		assert!(decoded.new_accounts.is_empty());
+		assert!(decoded.deleted_accounts.is_empty());
+		assert!(decoded.storage_diff.is_empty());
+		assert!(decoded.new_codes.is_empty());
+	}
+
+	#[test]
+	fn rlp_alloy_compat_full_diff() {
+		let addr_hash_1 = H256::from_low_u64_be(0x1234);
+		let addr_hash_2 = H256::from_low_u64_be(0x5678);
+
+		let diff = BlockStorageDiff {
+			hash: H256::from_low_u64_be(0xaabb),
+			parent_hash: H256::from_low_u64_be(0xccdd),
+			new_accounts: vec![
+				NewAccount {
+					address: addr_hash_1,
+					balance: U256::from(999_999),
+					nonce: 42,
+					code_hash: H256::from_low_u64_be(0xdead),
+				},
+				NewAccount {
+					address: addr_hash_2,
+					balance: U256::zero(),
+					nonce: 0,
+					code_hash: H256::zero(),
+				},
+			],
+			deleted_accounts: vec![
+				H256::from_low_u64_be(0xaaaa),
+				H256::from_low_u64_be(0xbbbb),
+			],
+			storage_diff: vec![
+				AccountStorageDiff {
+					address: H256::from_low_u64_be(0x1111),
+					values: vec![
+						IndexValuePair {
+							index: H256::from_low_u64_be(0),
+							value: U256::from(100),
+						},
+						IndexValuePair {
+							index: H256::from_low_u64_be(1),
+							value: U256::from(200),
+						},
+					],
+				},
+				AccountStorageDiff {
+					address: H256::from_low_u64_be(0x2222),
+					values: vec![],
+				},
+			],
+			new_codes: vec![NewCode {
+				code_hash: H256::from_low_u64_be(0xc0de),
+				code: vec![0x60, 0x80, 0x60, 0x40, 0x52, 0x34, 0x80, 0x15],
+			}],
+		};
+
+		let encoded = rlp::encode(&diff);
+		let decoded = AlloyBlockStorageDiff::decode(&mut encoded.as_ref())
+			.expect("alloy-rlp should decode full BlockStorageDiff");
+
+		assert_eq!(decoded.hash, B256::from(diff.hash.0));
+		assert_eq!(decoded.parent_hash, B256::from(diff.parent_hash.0));
+
+		assert_eq!(decoded.new_accounts.len(), 2);
+		assert_eq!(decoded.new_accounts[0].address, B256::from(addr_hash_1.0));
+		assert_eq!(decoded.new_accounts[0].balance, AlloyU256::from(999_999u64));
+		assert_eq!(decoded.new_accounts[0].nonce, 42);
+		assert_eq!(decoded.new_accounts[1].nonce, 0);
+		assert_eq!(decoded.new_accounts[1].balance, AlloyU256::ZERO);
+
+		assert_eq!(decoded.deleted_accounts.len(), 2);
+		assert_eq!(
+			decoded.deleted_accounts[0],
+			B256::from(H256::from_low_u64_be(0xaaaa).0)
+		);
+
+		assert_eq!(decoded.storage_diff.len(), 2);
+		assert_eq!(
+			decoded.storage_diff[0].address,
+			B256::from(H256::from_low_u64_be(0x1111).0)
+		);
+		assert_eq!(decoded.storage_diff[0].values.len(), 2);
+		assert_eq!(decoded.storage_diff[0].values[0].value, AlloyU256::from(100u64));
+		assert_eq!(decoded.storage_diff[1].values.len(), 0);
+
+		assert_eq!(decoded.new_codes.len(), 1);
+		assert_eq!(
+			decoded.new_codes[0].code.as_ref(),
+			&[0x60, 0x80, 0x60, 0x40, 0x52, 0x34, 0x80, 0x15]
+		);
+	}
+
+	#[test]
+	fn rlp_alloy_compat_large_values() {
+		let diff = BlockStorageDiff {
+			hash: H256::repeat_byte(0xff),
+			parent_hash: H256::repeat_byte(0xaa),
+			new_accounts: vec![NewAccount {
+				address: H256::repeat_byte(0xff),
+				balance: U256::MAX,
+				nonce: u64::MAX,
+				code_hash: H256::repeat_byte(0xff),
+			}],
+			deleted_accounts: vec![],
+			storage_diff: vec![],
+			new_codes: vec![NewCode {
+				code_hash: H256::repeat_byte(0xbb),
+				code: vec![0xfe; 1024],
+			}],
+		};
+
+		let encoded = rlp::encode(&diff);
+		let decoded = AlloyBlockStorageDiff::decode(&mut encoded.as_ref())
+			.expect("alloy-rlp should decode BlockStorageDiff with large values");
+
+		assert_eq!(decoded.new_accounts[0].nonce, u64::MAX);
+		assert_eq!(decoded.new_accounts[0].balance, AlloyU256::MAX);
+		assert_eq!(decoded.new_codes[0].code.len(), 1024);
 	}
 }

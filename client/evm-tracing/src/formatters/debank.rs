@@ -18,7 +18,7 @@
 
 use crate::listeners::debank::{CallFrame, DebankCallType, Listener};
 use crate::types::block::{
-	AccountStorageDiff, BlockStorageDiff, IndexValuePair, NewAccount, NewCode,
+	address_to_hash, AccountStorageDiff, BlockStorageDiff, IndexValuePair, NewAccount, NewCode,
 };
 use ethereum_types::{H160, H256, U256};
 use std::collections::HashMap;
@@ -80,8 +80,8 @@ impl Formatter {
 	///   Returns (NewAccount, code) where code is the contract bytecode (empty for EOAs)
 	pub fn format<F>(
 		mut listener: Listener,
-		block_hash: H256,
-		parent_hash: H256,
+		state_root: H256,
+		parent_state_root: H256,
 		tx_hashes: &[H256],
 		account_info_fn: F,
 	) -> DebankBlockOutput
@@ -125,7 +125,7 @@ impl Formatter {
 		}
 
 		// Build state diff
-		let state_diff = format_state_diff(&listener, block_hash, parent_hash, account_info_fn);
+		let state_diff = format_state_diff(&listener, state_root, parent_state_root, account_info_fn);
 
 		// Collect storage contracts
 		let storage_contracts: Vec<H160> = listener.storage_contracts.into_iter().collect();
@@ -257,8 +257,8 @@ fn process_frame_children(
 
 fn format_state_diff<F>(
 	listener: &Listener,
-	block_hash: H256,
-	parent_hash: H256,
+	state_root: H256,
+	parent_state_root: H256,
 	account_info_fn: F,
 ) -> BlockStorageDiff
 where
@@ -269,17 +269,31 @@ where
 	let mut storage_diff = Vec::new();
 
 	// Process touched accounts
+	log::debug!(
+		target: "tracing",
+		"format_state_diff: touched_accounts count = {}, addresses = {:?}",
+		listener.touched_accounts.len(),
+		listener.touched_accounts
+	);
 	for address in &listener.touched_accounts {
 		if listener.deleted_accounts.contains(address) {
 			continue;
 		}
 
-		if let Some((account, code)) = account_info_fn(*address) {
+		if let Some((mut account, code)) = account_info_fn(*address) {
+			// Convert address to H256 via keccak256
+			account.address = address_to_hash(address);
 			// Track new code for created contracts
 			if listener.created_accounts.contains(address) && !code.is_empty() {
 				new_codes_map.insert(account.code_hash, code);
 			}
 			new_accounts.push(account);
+		} else {
+			log::warn!(
+				target: "tracing",
+				"account_info_fn returned None for touched account {:?}",
+				address
+			);
 		}
 	}
 
@@ -293,14 +307,17 @@ where
 				.iter()
 				.map(|(index, value)| IndexValuePair {
 					index: *index,
-					value: *value,
+					value: U256::from_big_endian(value.as_bytes()),
 				})
 				.collect();
 
 			values.sort_by_key(|p| p.index);
 
 			if !values.is_empty() {
-				storage_diff.push(AccountStorageDiff { address, values });
+				storage_diff.push(AccountStorageDiff {
+					address: address_to_hash(&address),
+					values,
+				});
 			}
 		}
 	}
@@ -314,12 +331,13 @@ where
 		.collect();
 	new_codes.sort_by_key(|c| c.code_hash);
 
-	let mut deleted_accounts: Vec<H160> = listener.deleted_accounts.iter().cloned().collect();
+	let mut deleted_accounts: Vec<H256> =
+		listener.deleted_accounts.iter().map(address_to_hash).collect();
 	deleted_accounts.sort();
 
 	BlockStorageDiff {
-		hash: block_hash,
-		parent_hash,
+		hash: state_root,
+		parent_hash: parent_state_root,
 		new_accounts,
 		deleted_accounts,
 		storage_diff,

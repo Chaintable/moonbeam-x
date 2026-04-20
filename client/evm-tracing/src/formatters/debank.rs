@@ -19,6 +19,7 @@
 use crate::listeners::debank::{CallFrame, DebankCallType, Listener};
 use crate::types::block::{
 	address_to_hash, AccountStorageDiff, BlockStorageDiff, IndexValuePair, NewAccount, NewCode,
+	OverlayStateDelta,
 };
 use ethereum_types::{H160, H256, U256};
 use std::collections::HashMap;
@@ -74,18 +75,25 @@ pub struct Formatter;
 
 impl Formatter {
 	/// Format listener data into Debank output.
-	/// tx_hashes: mapping from transaction index to transaction hash
-	/// account_info_fn: callback to get account info for state diff
-	///   Returns (NewAccount, code) where code is the contract bytecode (empty for EOAs)
+	///
+	/// - `listener`: drives traces/events and `storage_contracts`.
+	/// - `delta`: overlay-derived NET state diff, the authoritative source for
+	///   `state_diff.{new_accounts, deleted_accounts, storage_diff, new_codes}`.
+	/// - `tx_hashes`: transaction index → hash mapping.
+	/// - `account_info_fn(addr)`: post-state `(balance, nonce, code_hash)`.
+	///   Code bytes are read from the overlay (`delta.code_updates`) when the
+	///   address was touched there; otherwise the post-state code_hash is used
+	///   unchanged.
 	pub fn format<F>(
 		mut listener: Listener,
+		delta: OverlayStateDelta,
 		state_root: H256,
 		parent_state_root: H256,
 		tx_hashes: &[H256],
 		account_info_fn: F,
 	) -> DebankBlockOutput
 	where
-		F: Fn(H160) -> Option<(NewAccount, Vec<u8>)>,
+		F: Fn(H160) -> Option<(U256, u64, H256)>,
 	{
 		// Finish the last transaction if not already done
 		listener.finish_transaction();
@@ -123,8 +131,8 @@ impl Formatter {
 			);
 		}
 
-		// Build state diff
-		let state_diff = format_state_diff(&listener, state_root, parent_state_root, account_info_fn);
+		// Build state diff purely from the overlay delta.
+		let state_diff = format_state_diff(delta, state_root, parent_state_root, account_info_fn);
 
 		// Collect storage contracts
 		let storage_contracts: Vec<H160> = listener.storage_contracts.into_iter().collect();
@@ -253,84 +261,99 @@ fn process_frame_children(
 	}
 }
 
+/// Build `BlockStorageDiff` from the overlay-derived delta.
+///
+/// `account_info_fn(addr)` must return `(balance, nonce, post_state_code_hash)`
+/// at the *current* block (post-execution). The `post_state_code_hash` is used
+/// verbatim for accounts whose code did not change this block; accounts present
+/// in `delta.code_updates` override it with `keccak256(new_code)` (empty hash
+/// if the update cleared the code).
+///
+/// `new_codes` is deduped by `code_hash` — the same bytecode deployed under
+/// multiple addresses only produces one `NewCode` entry.
 fn format_state_diff<F>(
-	listener: &Listener,
+	delta: OverlayStateDelta,
 	state_root: H256,
 	parent_state_root: H256,
 	account_info_fn: F,
 ) -> BlockStorageDiff
 where
-	F: Fn(H160) -> Option<(NewAccount, Vec<u8>)>,
+	F: Fn(H160) -> Option<(U256, u64, H256)>,
 {
-	let mut new_accounts = Vec::new();
-	let mut new_codes_map: HashMap<H256, Vec<u8>> = HashMap::new();
-	let mut storage_diff = Vec::new();
+	use sha3::{Digest, Keccak256};
+	let empty_code_hash = H256::from_slice(&Keccak256::digest(&[][..]));
 
-	// Process touched accounts
+	let mut new_accounts = Vec::new();
+	let mut new_codes_by_hash: HashMap<H256, Vec<u8>> = HashMap::new();
+
 	log::debug!(
 		target: "tracing",
-		"format_state_diff: touched_accounts count = {}, addresses = {:?}",
-		listener.touched_accounts.len(),
-		listener.touched_accounts
+		"format_state_diff: changed={}, deleted={}, storage_addrs={}, code_updates={}",
+		delta.changed_accounts.len(),
+		delta.deleted_accounts.len(),
+		delta.storage_diff.len(),
+		delta.code_updates.len(),
 	);
-	for address in &listener.touched_accounts {
-		if listener.deleted_accounts.contains(address) {
-			continue;
-		}
 
-		if let Some((mut account, code)) = account_info_fn(*address) {
-			// Convert address to H256 via keccak256
-			account.address = address_to_hash(address);
-			// Track new code for created contracts
-			if listener.created_accounts.contains(address) && !code.is_empty() {
-				new_codes_map.insert(account.code_hash, code);
+	for address in &delta.changed_accounts {
+		let (balance, nonce, post_state_code_hash) = match account_info_fn(*address) {
+			Some(v) => v,
+			None => {
+				log::warn!(
+					target: "tracing",
+					"account_info_fn returned None for changed account {:?}",
+					address
+				);
+				continue;
 			}
-			new_accounts.push(account);
-		} else {
-			log::warn!(
-				target: "tracing",
-				"account_info_fn returned None for touched account {:?}",
-				address
-			);
-		}
+		};
+
+		let code_hash = match delta.code_updates.get(address) {
+			Some(code) if code.is_empty() => empty_code_hash,
+			Some(code) => {
+				let h = H256::from_slice(&Keccak256::digest(&code[..]));
+				new_codes_by_hash.entry(h).or_insert_with(|| code.clone());
+				h
+			}
+			None => post_state_code_hash,
+		};
+
+		new_accounts.push(NewAccount {
+			address: address_to_hash(address),
+			balance,
+			nonce,
+			code_hash,
+		});
 	}
 
-	// Process storage changes
-	let mut storage_addresses: Vec<_> = listener.storage_changes.keys().cloned().collect();
-	storage_addresses.sort();
-
-	for address in storage_addresses {
-		if let Some(changes) = listener.storage_changes.get(&address) {
-			let mut values: Vec<IndexValuePair> = changes
-				.iter()
+	let storage_diff: Vec<AccountStorageDiff> = delta
+		.storage_diff
+		.into_iter()
+		.map(|(addr, slots)| AccountStorageDiff {
+			address: address_to_hash(&addr),
+			values: slots
+				.into_iter()
 				.map(|(index, value)| IndexValuePair {
-					index: *index,
+					index,
 					value: U256::from_big_endian(value.as_bytes()),
 				})
-				.collect();
+				.collect(),
+		})
+		.collect();
 
-			values.sort_by_key(|p| p.index);
-
-			if !values.is_empty() {
-				storage_diff.push(AccountStorageDiff {
-					address: address_to_hash(&address),
-					values,
-				});
-			}
-		}
-	}
-
-	// Sort for deterministic output
 	new_accounts.sort_by_key(|a| a.address);
 
-	let mut new_codes: Vec<NewCode> = new_codes_map
+	let mut new_codes: Vec<NewCode> = new_codes_by_hash
 		.into_iter()
 		.map(|(code_hash, code)| NewCode { code_hash, code })
 		.collect();
 	new_codes.sort_by_key(|c| c.code_hash);
 
-	let mut deleted_accounts: Vec<H256> =
-		listener.deleted_accounts.iter().map(address_to_hash).collect();
+	let mut deleted_accounts: Vec<H256> = delta
+		.deleted_accounts
+		.iter()
+		.map(address_to_hash)
+		.collect();
 	deleted_accounts.sort();
 
 	BlockStorageDiff {

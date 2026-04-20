@@ -19,6 +19,7 @@
 use super::serialization::*;
 use rlp::{Encodable, RlpStream};
 use serde::Serialize;
+use std::collections::{BTreeMap, BTreeSet};
 
 use ethereum_types::{H160, H256, U256};
 use parity_scale_codec::{Decode, Encode};
@@ -217,6 +218,32 @@ impl Encodable for BlockStorageDiff {
 		s.append_list(&self.storage_diff);
 		s.append_list(&self.new_codes);
 	}
+}
+
+/// Overlay-derived state delta from `main_storage_changes`, the authoritative
+/// source of truth for what a block mutated. All fields are overlay-only: they
+/// reflect the NET state transition parent→current, so reverted writes are
+/// already absent and SSTORE event ghost-diffs cannot leak in.
+///
+/// Populated by the RPC layer via the storage-changes overlay returned from
+/// `api.into_storage_changes(...)`; consumed by the formatter to build
+/// `BlockStorageDiff`.
+#[derive(Clone, Debug, Default)]
+pub struct OverlayStateDelta {
+	/// Accounts whose `System::Account`, `EVM::AccountCodes`, or
+	/// `EVM::AccountStorages` entry had a non-None write this block. Excludes
+	/// entries in `deleted_accounts`.
+	pub changed_accounts: BTreeSet<H160>,
+	/// Accounts whose `System::Account` entry was *removed* this block. This
+	/// is the only valid signal for account deletion — `AccountCodes::None`
+	/// alone does not imply deletion (EIP-7702 `reset_delegation` produces it).
+	pub deleted_accounts: BTreeSet<H160>,
+	/// Per-account storage slot net values. `H256::zero()` represents either
+	/// `SSTORE(slot, 0)` or a `reset_storage` / `clear_prefix`.
+	pub storage_diff: BTreeMap<H160, BTreeMap<H256, H256>>,
+	/// Account code updates. `Some(code)` = code deployed or replaced;
+	/// `Some(vec![])` = code cleared (EIP-7702 reset / `remove_account_code`).
+	pub code_updates: BTreeMap<H160, Vec<u8>>,
 }
 
 #[cfg(test)]

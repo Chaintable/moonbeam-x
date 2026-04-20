@@ -7972,6 +7972,7 @@ dependencies = [
  "hex",
  "md-5",
  "serde",
+ "sha1",
 ]
 
 [[package]]

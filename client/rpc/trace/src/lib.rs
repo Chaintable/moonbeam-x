@@ -417,7 +417,7 @@ where
 		let eth_block_hash = eth_block.header.hash();
 		let process_start_timestamp = std::time::SystemTime::now()
 			.duration_since(std::time::UNIX_EPOCH)
-			.map(|d| d.as_secs())
+			.map(|d| d.as_millis() as u64)
 			.unwrap_or(0);
 
 		// Build DebankBlock
@@ -431,7 +431,7 @@ where
 			miner: eth_block.header.beneficiary,
 			gas_limit: eth_block.header.gas_limit.as_u64(),
 			gas_used: eth_block.header.gas_used.as_u64(),
-			timestamp: eth_block.header.timestamp,
+			timestamp: eth_block.header.timestamp / 1000,
 			process_start_timestamp,
 		};
 
@@ -448,7 +448,7 @@ where
 			number: block_height as u64,
 			gas_limit: eth_block.header.gas_limit.as_u64(),
 			gas_used: eth_block.header.gas_used.as_u64(),
-			timestamp: eth_block.header.timestamp,
+			timestamp: eth_block.header.timestamp / 1000,
 			extra_data: eth_block.header.extra_data.clone(),
 			mix_hash: eth_block.header.mix_hash,
 			nonce: eth_block.header.nonce,
@@ -668,7 +668,6 @@ where
 				selector: e.selector,
 				topics: e.topics,
 				data: e.data,
-				tx_id: e.tx_id,
 				parent_trace_id: e.parent_trace_id,
 				pos_in_parent_trace: e.pos_in_parent_trace,
 				idx: e.idx,
@@ -684,7 +683,6 @@ where
 				selector: e.selector,
 				topics: e.topics,
 				data: e.data,
-				tx_id: e.tx_id,
 				parent_trace_id: e.parent_trace_id,
 				pos_in_parent_trace: e.pos_in_parent_trace,
 				idx: e.idx,

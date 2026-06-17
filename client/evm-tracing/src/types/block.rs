@@ -172,6 +172,16 @@ pub fn address_to_hash(address: &H160) -> H256 {
 	H256::from_slice(&Keccak256::digest(address.as_bytes()))
 }
 
+/// Convert a raw 32-byte EVM storage slot to its keccak256 hash.
+/// The Go consumer keys storage by keccak256(slot) (geth secure-trie style),
+/// mirroring how account addresses are hashed via `address_to_hash`. Frontier
+/// stores raw slots in `EVM::AccountStorages`, so the producer must hash them
+/// here to match the consumer's lookup key.
+pub fn slot_to_hash(slot: &H256) -> H256 {
+	use sha3::{Digest, Keccak256};
+	H256::from_slice(&Keccak256::digest(slot.as_bytes()))
+}
+
 // RLP encoding implementations for state diff types
 
 impl Encodable for NewAccount {

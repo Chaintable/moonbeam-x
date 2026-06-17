@@ -18,8 +18,8 @@
 
 use crate::listeners::debank::{CallFrame, DebankCallType, Listener};
 use crate::types::block::{
-	address_to_hash, AccountStorageDiff, BlockStorageDiff, IndexValuePair, NewAccount, NewCode,
-	OverlayStateDelta,
+	address_to_hash, slot_to_hash, AccountStorageDiff, BlockStorageDiff, IndexValuePair,
+	NewAccount, NewCode, OverlayStateDelta,
 };
 use ethereum_types::{H160, H256, U256};
 use std::collections::HashMap;
@@ -334,7 +334,8 @@ where
 			values: slots
 				.into_iter()
 				.map(|(index, value)| IndexValuePair {
-					index,
+					// Hash the raw EVM slot to match the consumer's keccak256(slot) key.
+					index: slot_to_hash(&index),
 					value: U256::from_big_endian(value.as_bytes()),
 				})
 				.collect(),

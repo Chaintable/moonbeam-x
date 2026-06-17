@@ -721,7 +721,7 @@ where
 		state_root: H256,
 	) -> Result<debank::types::BlockStorageDiff, String> {
 		use moonbeam_client_evm_tracing::types::block::{
-			address_to_hash, AccountStorageDiff, IndexValuePair, NewAccount, NewCode,
+			address_to_hash, slot_to_hash, AccountStorageDiff, IndexValuePair, NewAccount, NewCode,
 		};
 		use sc_client_api::StorageKey;
 		use sp_core::twox_128;
@@ -834,7 +834,8 @@ where
 				.entry(address)
 				.or_default()
 				.push(IndexValuePair {
-					index: slot,
+					// Hash the raw EVM slot to match the consumer's keccak256(slot) key.
+					index: slot_to_hash(&slot),
 					value: U256::from_big_endian(val.as_bytes()),
 				});
 		}

@@ -988,58 +988,39 @@ where
 		// Finish the last transaction
 		listener.finish_transaction();
 
-		// Extract storage changes from the overlay produced by trace_block.
-		// This captures ALL storage modifications including Substrate-level changes
-		// (staking rewards, XCM transfers, etc.) that the EVM tracer doesn't see.
-		{
-			use sp_core::twox_128;
-			let system_account_prefix: Vec<u8> = [
-				twox_128(b"System").as_slice(),
-				twox_128(b"Account").as_slice(),
-			]
-			.concat();
-			let prefix_len = system_account_prefix.len(); // 32 bytes
-
+		// Derive state diff from the post-execution storage overlay. This is
+		// the authoritative source of NET state change (parent → current) and
+		// naturally drops SSTORE writes in reverted frames, unlike the
+		// listener's event-stream accumulation. It also covers Substrate-side
+		// balance changes (staking rewards, XCM transfers, …) via the
+		// System::Account prefix, EIP-7702 code changes via AccountCodes, and
+		// governance-initiated EVM writes via AccountStorages.
+		let delta = {
 			let state = backend
 				.state_at(substrate_parent_hash, TrieCacheContext::Untrusted)
 				.map_err(|e| format!("Failed to get state at parent: {:?}", e))?;
-			if let Ok(storage_changes) =
-				api.into_storage_changes(&state, substrate_parent_hash)
-			{
-				for (key, value) in &storage_changes.main_storage_changes {
-					// Filter for System::Account keys that were modified (not deleted)
-					if key.starts_with(&system_account_prefix) && value.is_some() {
-						// Blake2_128Concat key: prefix(32) + blake2_128(16) + address(20)
-						if key.len() >= prefix_len + 16 + 20 {
-							let addr_start = prefix_len + 16;
-							let address =
-								H160::from_slice(&key[addr_start..addr_start + 20]);
-							listener.touched_accounts.insert(address);
-						}
-					}
-				}
-			} else {
-				log::warn!(
-					target: "tracing",
-					"Failed to extract storage changes for block {}, \
-					 substrate-only balance changes may be missing from state_diff",
-					height
-				);
-			}
-		}
+			let storage_changes = api.into_storage_changes(&state, substrate_parent_hash)
+				.map_err(|e| {
+					format!(
+						"Failed to extract storage changes for block {}: {:?} — \
+						 state_diff cannot be built",
+						height, e
+					)
+				})?;
+			debank::state_diff::scan_overlay(&storage_changes.main_storage_changes)
+		};
 
 		// Create a fresh runtime API instance for account queries.
 		// The previous `api` instance was used with `substrate_parent_hash` for trace_block,
 		// and Substrate does not allow reusing the same instance for a different block hash.
 		let account_api = client.runtime_api();
 
-		// Create account_info_fn that queries the Runtime API for account state
-		// Returns (NewAccount, code) tuple
-		let account_info_fn = |address: H160| -> Option<(
-			moonbeam_client_evm_tracing::types::block::NewAccount,
-			Vec<u8>,
-		)> {
-			// Get account basic info (balance, nonce) from Runtime API
+		// Return post-state (balance, nonce, code_hash) at the current block.
+		// The formatter overrides `code_hash` with `keccak256(overlay_code)` for
+		// addresses that appear in `delta.code_updates`, so this query only
+		// supplies the fallback code_hash for accounts whose code did not
+		// change this block.
+		let account_info_fn = |address: H160| -> Option<(U256, u64, H256)> {
 			let account = match account_api.account_basic(substrate_hash, address) {
 				Ok(account) => account,
 				Err(e) => {
@@ -1052,31 +1033,23 @@ where
 				}
 			};
 
-			// Get account code
 			let code = overrides
 				.account_code_at(substrate_hash, address)
 				.unwrap_or_default();
-
-			// Calculate code hash using keccak256
-			let code_hash = if code.is_empty() {
-				H256::from_slice(&keccak_256(&[]))
+			let code_hash = H256::from_slice(&keccak_256(if code.is_empty() {
+				&[]
 			} else {
-				H256::from_slice(&keccak_256(&code))
-			};
+				&code
+			}));
 
-			let new_account = moonbeam_client_evm_tracing::types::block::NewAccount {
-				address: H256::zero(), // Will be set by formatter via address_to_hash
-				balance: account.balance,
-				nonce: account.nonce.as_u64(),
-				code_hash,
-			};
-
-			Some((new_account, code))
+			Some((account.balance, account.nonce.as_u64(), code_hash))
 		};
 
-		// Format the listener output to Debank format
+		// Format the listener output to Debank format, with state_diff driven
+		// by the overlay-derived delta.
 		let formatted = DebankFormatter::format(
 			listener,
+			delta,
 			state_root,
 			parent_state_root,
 			&tx_hashes,

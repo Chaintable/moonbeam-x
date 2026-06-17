@@ -22,7 +22,7 @@ use evm_tracing_events::{
 	runtime::{Capture, ExitError, ExitReason},
 	Event, EvmEvent, GasometerEvent, Listener as ListenerT, RuntimeEvent, StepEventFilter,
 };
-use std::collections::{HashMap, HashSet};
+use std::collections::HashSet;
 
 /// Tracing version based on runtime capabilities.
 #[derive(Debug, Clone, Copy)]
@@ -182,16 +182,10 @@ pub struct Listener {
 	/// Completed call frames (one per transaction when tracing blocks)
 	pub completed_frames: Vec<CallFrame>,
 
-	// State diff tracking
-	/// Accounts created in this block
-	pub created_accounts: HashSet<H160>,
-	/// Accounts deleted (selfdestruct)
-	pub deleted_accounts: HashSet<H160>,
-	/// Accounts with balance/nonce changes
-	pub touched_accounts: HashSet<H160>,
-	/// Storage changes: address -> (slot -> value)
-	pub storage_changes: HashMap<H160, HashMap<H256, H256>>,
-	/// Contracts with storage changes
+	/// Contracts with storage changes, populated during `finish_transaction`
+	/// from per-frame `self_storage_change` flags. Retained for the
+	/// `storage_contracts` field of the trace output; state-diff itself is
+	/// built from the overlay delta, not from listener-accumulated sets.
 	pub storage_contracts: HashSet<H160>,
 
 	/// Call type for next context
@@ -219,11 +213,7 @@ impl Default for Listener {
 			Self {
 				callstack: Vec::new(),
 				completed_frames: Vec::new(),
-				created_accounts: HashSet::new(),
-				deleted_accounts: HashSet::new(),
-			touched_accounts: HashSet::new(),
-			storage_changes: HashMap::new(),
-			storage_contracts: HashSet::new(),
+				storage_contracts: HashSet::new(),
 			call_type: None,
 			skip_next_context: false,
 			first_transaction: true,
@@ -418,22 +408,14 @@ impl Listener {
 					}
 				}
 			}
-			RuntimeEvent::SStore {
-				address,
-				index,
-				value,
-			} => {
+			RuntimeEvent::SStore { .. } => {
 				// Flush precompile frames - SSTORE means parent is continuing
 				// (standard precompiles don't do SSTORE)
 				self.flush_pending_precompiles(None);
 
-				// Track storage changes
-				self.storage_changes
-					.entry(address)
-					.or_default()
-					.insert(index, value);
-
-				// Mark current frame as having storage change
+				// Mark current frame as having storage change. The actual
+				// slot values come from the overlay delta, not here, so we
+				// intentionally don't record (address, index, value).
 				if let Some(frame) = self.callstack.last_mut() {
 					frame.self_storage_change = true;
 					frame.storage_change = true;
@@ -454,11 +436,6 @@ impl Listener {
 			} => {
 				self.version = TracingVersion::EarlyTransact;
 				self.record_transaction_event_only = false;
-
-				self.touched_accounts.insert(caller);
-				if !value.is_zero() {
-					self.touched_accounts.insert(address);
-				}
 
 				self.callstack.push(CallFrame::new(
 					DebankCallType::Call,
@@ -489,10 +466,6 @@ impl Listener {
 				self.version = TracingVersion::EarlyTransact;
 				self.record_transaction_event_only = false;
 
-				self.touched_accounts.insert(caller);
-				self.created_accounts.insert(address);
-				self.touched_accounts.insert(address);
-
 				self.callstack.push(CallFrame::new(
 					DebankCallType::Create,
 					caller,
@@ -519,11 +492,6 @@ impl Listener {
 				self.flush_pending_precompiles(Some(context.caller));
 				// Mark matching precompile as having a subcall (Capture::Trap path)
 				self.mark_precompile_has_subcall(context.caller);
-
-				if !context.apparent_value.is_zero() {
-					self.touched_accounts.insert(context.caller);
-					self.touched_accounts.insert(code_address);
-				}
 
 				if !self.skip_next_context {
 					let call_type = match (self.call_type.take(), is_static) {
@@ -571,12 +539,6 @@ impl Listener {
 				// Mark matching precompile as having a subcall (Capture::Trap path)
 				self.mark_precompile_has_subcall(caller);
 
-				if !value.is_zero() {
-					self.touched_accounts.insert(caller);
-				}
-				self.created_accounts.insert(address);
-				self.touched_accounts.insert(address);
-
 				if !self.skip_next_context {
 					let gas = target_gas.unwrap_or(0);
 					let mut frame = CallFrame::new(
@@ -601,12 +563,6 @@ impl Listener {
 			} => {
 				// Flush precompile frames - SELFDESTRUCT means parent is continuing
 				self.flush_pending_precompiles(None);
-
-				self.deleted_accounts.insert(address);
-				self.touched_accounts.insert(address);
-				if !balance.is_zero() {
-					self.touched_accounts.insert(target);
-				}
 
 				// Create a suicide call frame
 				// Note: For Suicide, `from` is the self-destructing contract,
@@ -655,12 +611,6 @@ impl Listener {
 				// Mark matching precompile as having a subcall (nested precompile case)
 				self.mark_precompile_has_subcall(context.caller);
 
-				// Track touched accounts if value transfer
-				if !context.apparent_value.is_zero() {
-					self.touched_accounts.insert(context.caller);
-					self.touched_accounts.insert(code_address);
-				}
-
 				// Create precompile frame
 				let gas = target_gas.unwrap_or(0);
 				let mut frame = CallFrame::new(
@@ -705,13 +655,6 @@ impl Listener {
 		if size <= 1 {
 			// Root frame exit - just process output and calculate gas_used
 			if let Some(frame) = self.callstack.last_mut() {
-				// Save address before process_output (which may set to = zero on Create failure)
-				let created_addr = if frame.call_type == DebankCallType::Create {
-					Some(frame.to)
-				} else {
-					None
-				};
-
 				frame.process_output(return_value, reason);
 				// Use actual start gas as gas limit
 				if let Some(sg) = frame.start_gas {
@@ -719,26 +662,12 @@ impl Listener {
 				}
 				// Calculate gas_used for root frame (pure execution gas, no intrinsic cost)
 				frame.gas_used = frame.gas.saturating_sub(frame.gas_remaining);
-
-				// If Create failed, remove from created_accounts
-				if frame.failed {
-					if let Some(addr) = created_addr {
-						self.created_accounts.remove(&addr);
-					}
-				}
 			}
 			return;
 		}
 
 		// Pop the call
 		if let Some(mut call) = self.callstack.pop() {
-			// Save address before process_output (which may set to = zero on Create failure)
-			let created_addr = if call.call_type == DebankCallType::Create {
-				Some(call.to)
-			} else {
-				None
-			};
-
 			call.process_output(return_value, reason);
 
 			// Use actual start gas as gas limit
@@ -747,13 +676,6 @@ impl Listener {
 			}
 			// Calculate gas_used = initial_gas - remaining_gas
 			call.gas_used = call.gas.saturating_sub(call.gas_remaining);
-
-			// If Create failed, remove from created_accounts
-			if call.failed {
-				if let Some(addr) = created_addr {
-					self.created_accounts.remove(&addr);
-				}
-			}
 
 			call.pos_in_parent_trace = if let Some(parent) = self.callstack.last() {
 				parent.calls.len() + parent.logs.len()
@@ -1267,7 +1189,6 @@ mod tests {
 			DebankCallType::Create
 		);
 		assert!(!listener.completed_frames[0].failed);
-		assert!(listener.created_accounts.contains(&H160::from_low_u64_be(200)));
 	}
 
 	#[test]
@@ -1280,8 +1201,6 @@ mod tests {
 
 		assert_eq!(listener.completed_frames.len(), 1);
 		assert!(listener.completed_frames[0].failed);
-		// Created account should be removed on failure
-		assert!(!listener.created_accounts.contains(&H160::from_low_u64_be(200)));
 	}
 
 	// ============ Nested Call Tests ============
@@ -1470,9 +1389,6 @@ mod tests {
 			listener.completed_frames[0].calls[0].call_type,
 			DebankCallType::Suicide
 		);
-		assert!(listener
-			.deleted_accounts
-			.contains(&H160::from_low_u64_be(100)));
 	}
 
 	// ============ Log Tests ============
@@ -1537,9 +1453,6 @@ mod tests {
 		assert_eq!(listener.completed_frames.len(), 1);
 		assert!(listener.completed_frames[0].self_storage_change);
 		assert!(listener.completed_frames[0].storage_change);
-		assert!(listener
-			.storage_changes
-			.contains_key(&H160::from_low_u64_be(100)));
 	}
 
 	#[test]

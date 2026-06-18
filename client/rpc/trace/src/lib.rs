@@ -42,8 +42,9 @@ use tracing::{instrument, Instrument};
 
 use sc_client_api::backend::{Backend, StateBackend, StorageProvider, TrieCacheContext};
 use sc_service::SpawnTaskHandle;
-use sp_api::{ApiExt, Core, ProvideRuntimeApi};
+use sp_api::{ApiExt, CallApiAt, Core, ProvideRuntimeApi};
 use sp_block_builder::BlockBuilder;
+use sp_inherents::CreateInherentDataProviders;
 use sp_blockchain::{
 	Backend as BlockchainBackend, Error as BlockChainError, HeaderBackend, HeaderMetadata,
 };
@@ -53,7 +54,9 @@ use substrate_prometheus_endpoint::Registry as PrometheusRegistry;
 
 use ethereum_types::{H160, H256, U256};
 use fc_rpc::{lru_cache::LRUCacheByteLimited, Eth, EthConfig};
-use fc_rpc_core::types::{BlockNumberOrHash, BlockTransactions, Receipt, RichBlock, Transaction};
+use fc_rpc_core::types::{
+	BlockNumberOrHash, BlockTransactions, Receipt, RichBlock, Transaction, TransactionRequest,
+};
 use fc_storage::StorageOverride;
 use fp_rpc::EthereumRuntimeRPCApi;
 use jsonrpsee::core::RpcResult;
@@ -74,6 +77,14 @@ pub trait EthDataProvider: Send + Sync {
 		number_or_hash: BlockNumberOrHash,
 		full: bool,
 	) -> RpcResult<Option<RichBlock>>;
+
+	/// Estimate gas for a call (binary search + EstimateGasAdapter). Used by the
+	/// `debank_estimateGas` RPC to reuse the node's existing estimation path.
+	async fn estimate_gas(
+		&self,
+		request: TransactionRequest,
+		number_or_hash: Option<BlockNumberOrHash>,
+	) -> RpcResult<U256>;
 }
 
 use moonbeam_client_evm_tracing::{
@@ -1758,13 +1769,13 @@ where
 impl<B, C, P, CT, BE, CIDP, EC> EthDataProvider for Eth<B, C, P, CT, BE, CIDP, EC>
 where
 	B: BlockT,
-	C: ProvideRuntimeApi<B>,
-	C::Api: EthereumRuntimeRPCApi<B>,
+	C: CallApiAt<B> + ProvideRuntimeApi<B>,
+	C::Api: BlockBuilder<B> + EthereumRuntimeRPCApi<B>,
 	C: HeaderBackend<B> + StorageProvider<B, BE> + 'static,
 	BE: Backend<B> + 'static,
 	P: sc_service::TransactionPool<Block = B, Hash = B::Hash> + 'static,
 	CT: Send + Sync + 'static,
-	CIDP: Send + Sync + 'static,
+	CIDP: CreateInherentDataProviders<B, ()> + Send + Sync + 'static,
 	EC: EthConfig<B, C>,
 {
 	async fn block_transaction_receipts(
@@ -1780,5 +1791,13 @@ where
 		full: bool,
 	) -> RpcResult<Option<RichBlock>> {
 		Eth::block_by_number(self, number_or_hash, full).await
+	}
+
+	async fn estimate_gas(
+		&self,
+		request: TransactionRequest,
+		number_or_hash: Option<BlockNumberOrHash>,
+	) -> RpcResult<U256> {
+		Eth::estimate_gas(self, request, number_or_hash).await
 	}
 }

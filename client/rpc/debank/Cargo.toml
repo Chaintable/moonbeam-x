@@ -1,5 +1,5 @@
 [package]
-name = "moonbeam-rpc-trace"
+name = "moonbeam-rpc-debank"
 authors = { workspace = true }
 edition = "2021"
 homepage = "https://moonbeam.network"
@@ -10,28 +10,22 @@ version = "0.6.0"
 [dependencies]
 async-trait = { workspace = true }
 ethereum-types = { workspace = true }
-rlp = { workspace = true }
+evm = { workspace = true }
 futures = { workspace = true }
 jsonrpsee = { workspace = true, features = [ "macros", "server" ] }
 log = { workspace = true }
-parity-scale-codec = { workspace = true }
-substrate-prometheus-endpoint = { workspace = true }
-tokio = { workspace = true, features = [ "sync", "time" ] }
-tracing = { workspace = true }
+serde_json = { workspace = true, features = [ "std" ] }
+tokio = { workspace = true, features = [ "sync" ] }
 
 # Moonbeam
 moonbeam-client-evm-tracing = { workspace = true }
-moonbeam-rpc-core-trace = { workspace = true }
-moonbeam-rpc-core-types = { workspace = true }
+moonbeam-rpc-core-debank = { workspace = true }
 moonbeam-rpc-primitives-debug = { workspace = true, default-features = true }
+moonbeam-rpc-trace = { workspace = true }
 
 # Substrate
 sc-client-api = { workspace = true }
-sc-utils = { workspace = true }
-sc-service = { workspace = true }
 sp-api = { workspace = true }
-sp-block-builder = { workspace = true }
-sp-inherents = { workspace = true }
 sp-blockchain = { workspace = true }
 sp-core = { workspace = true }
 sp-runtime = { workspace = true }
@@ -41,4 +35,5 @@ fc-api = { workspace = true }
 fc-rpc = { workspace = true, features = [ "rpc-binary-search-estimate" ] }
 fc-rpc-core = { workspace = true }
 fc-storage = { workspace = true }
+fp-evm = { workspace = true }
 fp-rpc = { workspace = true }

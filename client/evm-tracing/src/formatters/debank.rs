@@ -148,6 +148,41 @@ impl Formatter {
 	}
 }
 
+/// Convert a single completed [`CallFrame`] into flat `(traces, events)` for one
+/// simulated transaction. Mirrors [`Formatter::format`]'s per-frame logic but
+/// standalone (no block-level state diff), for `debank_simulateTransactions`.
+/// Failed sub-traces/events are appended after the successful ones so callers
+/// receive the full set in one vector each.
+pub fn frame_to_debank(frame: &CallFrame, tx_hash: H256) -> (Vec<DebankTrace>, Vec<DebankEvent>) {
+	let mut traces = Vec::new();
+	let mut error_traces = Vec::new();
+	let mut events = Vec::new();
+	let mut error_events = Vec::new();
+
+	let root_trace_id = calculate_debank_id(&[&format!("{tx_hash:?}"), "", "0"]);
+	let root_trace = frame_to_trace(frame, tx_hash, String::new(), &root_trace_id);
+	if frame.failed {
+		error_traces.push(root_trace);
+	} else {
+		traces.push(root_trace);
+	}
+
+	process_frame_children(
+		frame,
+		tx_hash,
+		&root_trace_id,
+		&[],
+		&mut traces,
+		&mut error_traces,
+		&mut events,
+		&mut error_events,
+	);
+
+	traces.append(&mut error_traces);
+	events.append(&mut error_events);
+	(traces, events)
+}
+
 fn frame_to_trace(
 	frame: &CallFrame,
 	tx_hash: H256,

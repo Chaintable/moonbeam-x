@@ -181,6 +181,7 @@ where
 	};
 	use moonbeam_dev_rpc::{DevApiServer, DevRpc};
 	use moonbeam_finality_rpc::{MoonbeamFinality, MoonbeamFinalityApiServer};
+	use moonbeam_rpc_debank::{Debank, DebankApiServer};
 	use moonbeam_rpc_debug::{Debug, DebugServer};
 	use moonbeam_rpc_trace::{Trace, TraceServer};
 	use pallet_transaction_payment_rpc::{TransactionPayment, TransactionPaymentApiServer};
@@ -415,6 +416,20 @@ where
 		if let Some(debug_requester) = tracing_config.tracing_requesters.debug {
 			io.merge(Debug::new(debug_requester).into_rpc())?;
 		}
+
+		// DeBank simulation RPC (debank_simulateTransactions / contractMultiCall /
+		// estimateGas). Gated behind tracing because simulate uses the tracing
+		// runtime API (`trace_call`); the node must run with `--ethapi=trace` (or
+		// `debug`) and an `evm-tracing` runtime.
+		io.merge(
+			Debank::new(
+				client.clone(),
+				frontier_backend.clone(),
+				eth_api_for_trace.clone(),
+				moonbeam_rpc_debank::DEFAULT_MAX_BATCH_SIZE,
+			)
+			.into_rpc(),
+		)?;
 	}
 
 	Ok(io)

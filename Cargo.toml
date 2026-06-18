@@ -121,9 +121,11 @@ moonbeam-service = { path = "node/service", default-features = false }
 moonbeam-client-evm-tracing = { path = "client/evm-tracing" }
 moonbeam-dev-rpc = { path = "client/rpc/dev" }
 moonbeam-finality-rpc = { path = "client/rpc/finality" }
+moonbeam-rpc-core-debank = { path = "client/rpc-core/debank" }
 moonbeam-rpc-core-debug = { path = "client/rpc-core/debug" }
 moonbeam-rpc-core-trace = { path = "client/rpc-core/trace" }
 moonbeam-rpc-core-types = { path = "client/rpc-core/types" }
+moonbeam-rpc-debank = { path = "client/rpc/debank" }
 moonbeam-rpc-debug = { path = "client/rpc/debug" }
 moonbeam-rpc-trace = { path = "client/rpc/trace" }
 moonbeam-vrf = { path = "client/vrf" }

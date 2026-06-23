@@ -4,6 +4,9 @@ on:
   pull_request:
     branches:
       - "debank"
+  release:
+    types:
+      - created
   workflow_dispatch:
 
 env:
@@ -26,7 +29,7 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v2
         with:
-          ref: ${{ github.event.pull_request.head.sha }}
+          ref: ${{ github.event.pull_request.head.sha || github.ref }}
 
       - uses: tibdex/github-app-token@v1
         id: generate-token
@@ -34,9 +37,15 @@ jobs:
           app_id: ${{ secrets.RELEASE_MANAGER_APP_ID }}
           private_key: ${{ secrets.RELEASE_MANAGER_APP_SECRET }}
 
-      - name: Set env
+      - name: Set env (PR / dispatch)
+        if: github.event_name != 'release'
         run: |
           echo "REVISION=$(git rev-parse --short=8 HEAD)" >> $GITHUB_ENV
+
+      - name: Set env (release)
+        if: github.event_name == 'release'
+        run: |
+          echo "REVISION=${GITHUB_REF#refs/*/}" >> $GITHUB_ENV
 
       - name: Configure AWS Credentials
         uses: aws-actions/configure-aws-credentials@v4
@@ -70,11 +79,17 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v2
         with:
-          ref: ${{ github.event.pull_request.head.sha }}
+          ref: ${{ github.event.pull_request.head.sha || github.ref }}
 
-      - name: Set env
+      - name: Set env (PR / dispatch)
+        if: github.event_name != 'release'
         run: |
           echo "REVISION=$(git rev-parse --short=8 HEAD)" >> $GITHUB_ENV
+
+      - name: Set env (release)
+        if: github.event_name == 'release'
+        run: |
+          echo "REVISION=${GITHUB_REF#refs/*/}" >> $GITHUB_ENV
 
       - name: Configure AWS Credentials
         uses: aws-actions/configure-aws-credentials@v4

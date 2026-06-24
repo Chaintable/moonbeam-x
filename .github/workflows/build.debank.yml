@@ -31,12 +31,6 @@ jobs:
         with:
           ref: ${{ github.event.pull_request.head.sha || github.ref }}
 
-      - uses: tibdex/github-app-token@v1
-        id: generate-token
-        with:
-          app_id: ${{ secrets.RELEASE_MANAGER_APP_ID }}
-          private_key: ${{ secrets.RELEASE_MANAGER_APP_SECRET }}
-
       - name: Set env (PR / dispatch)
         if: github.event_name != 'release'
         run: |
@@ -66,7 +60,6 @@ jobs:
           context: .
           push: true
           tags: ${{ env.REGISTRY }}/${{ env.IMAGE }}:${{ matrix.arch }}-${{ env.REVISION }}
-          build-args: ACCESS_TOKEN=${{ steps.generate-token.outputs.token }}
           provenance: false
 
   merge-docker-manifest:

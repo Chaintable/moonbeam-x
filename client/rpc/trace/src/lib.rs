@@ -432,13 +432,13 @@ where
 			.unwrap_or(0);
 
 		// Build DebankBlock
-		// Note: ethereum::Header doesn't have base_fee_per_gas field, it can be obtained from
-		// runtime API if needed. For now, we set it to None.
+		// Note: ethereum::Header doesn't carry base_fee_per_gas, but the RichBlock fetched via
+		// EthApi does, so we source it from there.
 		let debank_block = DebankBlock {
 			id: eth_block_hash,
 			height: block_height as u64,
 			parent_id: eth_block.header.parent_hash,
-			base_fee_per_gas: None, // TODO: Can be obtained from Runtime API if needed
+			base_fee_per_gas: rpc_block.inner.base_fee_per_gas.map(|f| f.as_u64()),
 			miner: eth_block.header.beneficiary,
 			gas_limit: eth_block.header.gas_limit.as_u64(),
 			gas_used: eth_block.header.gas_used.as_u64(),
@@ -463,7 +463,7 @@ where
 			extra_data: eth_block.header.extra_data.clone(),
 			mix_hash: eth_block.header.mix_hash,
 			nonce: eth_block.header.nonce,
-			base_fee_per_gas: None, // TODO: Can be obtained from Runtime API if needed
+			base_fee_per_gas: rpc_block.inner.base_fee_per_gas.map(|f| f.as_u64()),
 			hash: eth_block_hash,
 		};
 

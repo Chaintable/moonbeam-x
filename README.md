@@ -1,6 +1,5 @@
 # Chaintable write node
 
-> A Chaintable **write node (producer)** for [leafage-evm](https://github.com/Chaintable/leafage-evm).
 > Fork of [moonbeam-foundation/moonbeam](https://github.com/moonbeam-foundation/moonbeam), with Chaintable pipeline patches.
 
 ## Architecture

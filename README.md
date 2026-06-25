@@ -1,3 +1,37 @@
+# Moonbeam / Moonriver Write Node — Chaintable/moonbeam-x
+
+> A DeBank / Chaintable **write node (producer)** for [leafage-evm](https://github.com/Chaintable/leafage-evm).
+> Fork of [moonbeam-foundation/moonbeam](https://github.com/moonbeam-foundation/moonbeam), with DeBank pipeline patches.
+
+## Architecture
+
+This repo runs the **Moonbeam / Moonriver** execution layer and, with DeBank's pipeline patches, produces block data + state diffs to **Kafka + S3**. The consumer [leafage-evm](https://github.com/Chaintable/leafage-evm) ingests that stream to serve lightweight EVM **state queries** (`eth_call`, `eth_estimateGas`, …) — without P2P sync or transaction storage. See the [leafage-evm architecture](https://github.com/Chaintable/leafage-evm#architecture) for the full picture.
+
+```
+Moonbeam/Moonriver write node (this repo · producer)
+        │  block + state diff
+        ▼
+     Kafka + S3
+        │
+        ▼
+  leafage-evm (consumer · EVM state queries)
+```
+
+## As a producer (operator quickstart)
+
+1. **Image** — CI publishes multi-arch images to public ECR:
+   `public.ecr.aws/b2h7a5c4/chaintable/moonbeam-writer` and `…/moonriver-writer`
+2. **Build locally** — clone **this repo** and build (see [Build the Node](#build-the-node) below):
+   ```bash
+   git clone https://github.com/Chaintable/moonbeam-x
+   cd moonbeam-x
+   cargo build --release
+   ```
+   or `docker build -f docker/moonbeam.Dockerfile .`
+3. **Run** — start the node with the DeBank pipeline (Kafka + S3) config so it feeds state updates to leafage-evm.
+
+---
+
 # ![Moonbeam](media/Banner.jpg)
 
 # Information
@@ -157,12 +191,12 @@ To build Moonbeam, a proper Substrate development environment is required. If yo
 
 If you need a refresher setting up your Substrate environment, see [Substrate's Getting Started Guide](https://substrate.dev/docs/en/knowledgebase/getting-started/).
 
-Please note that cloning the master branch might result in an unstable build. If you want a stable version, check out the [latest releases](https://github.com/moonbeam-foundation/moonbeam/releases).
+Please note that cloning the master branch might result in an unstable build. If you want a stable version, check out the [latest releases](https://github.com/Chaintable/moonbeam-x/releases).
 
 ```bash
 # Fetch the code
-git clone https://github.com/moonbeam-foundation/moonbeam
-cd moonbeam
+git clone https://github.com/Chaintable/moonbeam-x
+cd moonbeam-x
 
 # Build the node (The first build will be long (~30min))
 cargo build --release

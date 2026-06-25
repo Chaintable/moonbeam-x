@@ -17,19 +17,6 @@ Moonbeam/Moonriver write node (this repo · producer)
   leafage-evm (consumer · EVM state queries)
 ```
 
-## As a producer (operator quickstart)
-
-1. **Image** — CI publishes multi-arch images to public ECR:
-   `public.ecr.aws/b2h7a5c4/chaintable/moonbeam-writer` and `…/moonriver-writer`
-2. **Build locally** — clone **this repo** and build (see [Build the Node](#build-the-node) below):
-   ```bash
-   git clone https://github.com/Chaintable/moonbeam-x
-   cd moonbeam-x
-   cargo build --release
-   ```
-   or `docker build -f docker/moonbeam.Dockerfile .`
-3. **Run** — start the node with the DeBank pipeline (Kafka + S3) config so it feeds state updates to leafage-evm.
-
 ---
 
 # ![Moonbeam](media/Banner.jpg)

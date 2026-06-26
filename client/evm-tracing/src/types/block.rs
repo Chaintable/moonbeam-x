@@ -241,12 +241,13 @@ impl Encodable for BlockStorageDiff {
 #[derive(Clone, Debug, Default)]
 pub struct OverlayStateDelta {
 	/// Accounts whose `System::Account`, `EVM::AccountCodes`, or
-	/// `EVM::AccountStorages` entry had a non-None write this block. Excludes
-	/// entries in `deleted_accounts`.
+	/// `EVM::AccountStorages` entry had a non-None write this block. Finalized
+	/// deleted accounts are removed before formatting.
 	pub changed_accounts: BTreeSet<H160>,
-	/// Accounts whose `System::Account` entry was *removed* this block. This
-	/// is the only valid signal for account deletion — `AccountCodes::None`
-	/// alone does not imply deletion (EIP-7702 `reset_delegation` produces it).
+	/// Accounts whose `System::Account` entry was *removed* this block. This is
+	/// a deletion candidate: Moonbeam can reap a `System::Account` while leaving
+	/// EVM code intact, so RPC code must confirm post-state code is empty before
+	/// formatting it as a Debank deleted account.
 	pub deleted_accounts: BTreeSet<H160>,
 	/// Per-account storage slot net values. `H256::zero()` represents either
 	/// `SSTORE(slot, 0)` or a `reset_storage` / `clear_prefix`.

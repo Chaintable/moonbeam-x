@@ -65,13 +65,13 @@ const SLOT_OFFSET: usize = ADDR_OFFSET + 20 + 16; // 84
 /// from the SSTORE-in-reverted-frame ghost-diff problem of event-stream tracing.
 ///
 /// Three storage maps are inspected:
-///   - `System::Account`      — authoritative account birth / death signal.
+///   - `System::Account`      — balance/nonce changes and deletion candidates.
 ///   - `EVM::AccountCodes`    — code deploy / clear (includes EIP-7702 reset).
 ///   - `EVM::AccountStorages` — EVM storage slot net values.
 ///
 /// Accounts appearing in `System::Account::None` are routed to
-/// `deleted_accounts`; the function then strips those addresses from any other
-/// field so the final delta is self-consistent.
+/// `deleted_accounts` as deletion candidates. `finalize_deleted_accounts` must
+/// be called before formatting the diff.
 pub fn scan_overlay(main_storage_changes: &[(Vec<u8>, Option<Vec<u8>>)]) -> OverlayStateDelta {
 	let sys_account_prefix: Vec<u8> =
 		[twox_128(b"System").as_slice(), twox_128(b"Account").as_slice()].concat();
@@ -129,6 +129,31 @@ pub fn scan_overlay(main_storage_changes: &[(Vec<u8>, Option<Vec<u8>>)]) -> Over
 				.entry(addr)
 				.or_default()
 				.insert(slot, val);
+			delta.changed_accounts.insert(addr);
+		}
+	}
+
+	delta
+}
+
+/// Convert `System::Account` deletion candidates into final Debank deletions.
+///
+/// Moonbeam can reap a `System::Account` when balance/nonce become zero while
+/// leaving `EVM::AccountCodes` intact. In Ethereum terms that account still
+/// exists because code exists, so it must be emitted as a changed account with
+/// an updated nonce/balance/code hash instead of as a deleted account. A final
+/// deletion is only valid when the post-state has no code.
+pub fn finalize_deleted_accounts<F>(
+	mut delta: OverlayStateDelta,
+	post_state_has_code: F,
+) -> OverlayStateDelta
+where
+	F: Fn(H160) -> bool,
+{
+	let deletion_candidates: Vec<H160> = delta.deleted_accounts.iter().copied().collect();
+	for addr in deletion_candidates {
+		if post_state_has_code(addr) {
+			delta.deleted_accounts.remove(&addr);
 			delta.changed_accounts.insert(addr);
 		}
 	}
@@ -282,11 +307,37 @@ mod tests {
 			(evm_codes_key(addr), None),
 			(evm_storages_key(addr, slot), None),
 		];
-		let d = scan_overlay(&input);
+		let d = finalize_deleted_accounts(scan_overlay(&input), |_| false);
 		assert!(d.deleted_accounts.contains(&addr));
 		assert!(!d.changed_accounts.contains(&addr));
 		assert!(!d.storage_diff.contains_key(&addr));
 		assert!(!d.code_updates.contains_key(&addr));
+	}
+
+	#[test]
+	fn system_account_removed_but_code_survives_is_not_deleted() {
+		// Moonbeam can reap the Substrate `System::Account` for a contract when
+		// balance and nonce become zero while leaving `EVM::AccountCodes` intact.
+		// That must not be exported as a Debank deleted account because applying
+		// it would remove live contract code downstream.
+		let addr = H160::repeat_byte(0xAB);
+		let input = vec![(sys_account_key(addr), None)];
+
+		let d = finalize_deleted_accounts(scan_overlay(&input), |a| a == addr);
+
+		assert!(!d.deleted_accounts.contains(&addr));
+		assert!(d.changed_accounts.contains(&addr));
+	}
+
+	#[test]
+	fn system_account_removed_without_code_stays_deleted() {
+		let addr = H160::repeat_byte(0xBC);
+		let input = vec![(sys_account_key(addr), None)];
+
+		let d = finalize_deleted_accounts(scan_overlay(&input), |_| false);
+
+		assert!(d.deleted_accounts.contains(&addr));
+		assert!(!d.changed_accounts.contains(&addr));
 	}
 
 	#[test]

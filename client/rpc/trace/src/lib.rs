@@ -1007,7 +1007,7 @@ where
 		// balance changes (staking rewards, XCM transfers, …) via the
 		// System::Account prefix, EIP-7702 code changes via AccountCodes, and
 		// governance-initiated EVM writes via AccountStorages.
-		let delta = {
+		let mut delta = {
 			let state = backend
 				.state_at(substrate_parent_hash, TrieCacheContext::Untrusted)
 				.map_err(|e| format!("Failed to get state at parent: {:?}", e))?;
@@ -1021,6 +1021,12 @@ where
 				})?;
 			debank::state_diff::scan_overlay(&storage_changes.main_storage_changes)
 		};
+		delta = debank::state_diff::finalize_deleted_accounts(delta, |address| {
+			overrides
+				.account_code_at(substrate_hash, address)
+				.map(|code| !code.is_empty())
+				.unwrap_or(false)
+		});
 
 		// Create a fresh runtime API instance for account queries.
 		// The previous `api` instance was used with `substrate_parent_hash` for trace_block,

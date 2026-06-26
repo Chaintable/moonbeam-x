@@ -17,6 +17,8 @@ Chaintable write node (this repo · producer, embeds pipeline tracer)
         └─ block files (tx · trace · receipts · events) ──→ S3 ─→ Chaintable indexing pipeline (tx/trace data)
 ```
 
+> **Tracing runtime companion:** Moonbeam is a Substrate / Polkadot parachain, so EVM call-trace support is **not** compiled into this binary — the node loads modified "tracing runtime" WASM from [moonbeam-runtime-overrides-x](https://github.com/Chaintable/moonbeam-runtime-overrides-x) at startup (`--wasm-runtime-overrides`). The deployed image is that companion's output: this writer image **plus** the tracing WASM substitutes. Without the overrides, `debug_*` / trace RPCs (and thus the tx / call-trace path to the pipeline) are unavailable.
+
 ---
 
 # ![Moonbeam](media/Banner.jpg)

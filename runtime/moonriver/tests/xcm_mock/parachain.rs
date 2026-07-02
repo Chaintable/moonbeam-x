@@ -713,6 +713,7 @@ impl pallet_xcm_transactor::Config for Runtime {
 	type HrmpManipulatorOrigin = EnsureRoot<AccountId>;
 	type HrmpOpenOrigin = EnsureRoot<AccountId>;
 	type MaxHrmpFee = xcm_builder::Case<MaxHrmpRelayFee>;
+	type FeeTrader = moonbeam_tests_primitives::MemoryFeeTrader;
 }
 
 parameter_types! {
@@ -770,6 +771,7 @@ impl pallet_evm::Config for Runtime {
 	type PrecompilesValue = ();
 	type ChainId = ();
 	type BlockGasLimit = BlockGasLimit;
+	type TransactionGasLimit = moonriver_runtime::TransactionGasLimit;
 	type OnChargeTransaction = ();
 	type BlockHashMapping = pallet_evm::SubstrateBlockHashMapping<Self>;
 	type FindAuthor = ();
@@ -851,6 +853,7 @@ impl xcm_primitives::HrmpEncodeCall for MockHrmpEncoder {
 
 parameter_types! {
 	pub const PostBlockAndTxnHashes: PostLogContent = PostLogContent::BlockAndTxnHashes;
+	pub const AllowUnprotectedTxs: bool = false;
 }
 
 impl pallet_ethereum::Config for Runtime {
@@ -858,6 +861,7 @@ impl pallet_ethereum::Config for Runtime {
 		pallet_ethereum::IntermediateStateRoot<<Runtime as frame_system::Config>::Version>;
 	type PostLogContent = PostBlockAndTxnHashes;
 	type ExtraDataLength = ConstU32<30>;
+	type AllowUnprotectedTxs = AllowUnprotectedTxs;
 }
 
 parameter_types! {

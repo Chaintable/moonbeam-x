@@ -84,6 +84,26 @@ fn add_supported_asset(asset_type: parachain::AssetType, units_per_second: u128)
 	Ok(())
 }
 
+/// Helper function to set fee per second for an asset location (for compatibility with old tests).
+/// Converts fee_per_second to relative_price and adds/edits the asset in the weight-trader.
+fn set_fee_per_second_for_location(location: Location, fee_per_second: u128) -> Result<(), ()> {
+	use moonbeam_tests_primitives::MemoryFeeTrader;
+	use xcm_primitives::XcmFeeTrader;
+
+	// In tests, we configure fees for XcmTransactor via the in-memory fee trader
+	// instead of pallet-xcm-weight-trader, so that generic XCM funding transfers
+	// remain free (as on master) and only the transactor calls are charged.
+	let precision_factor = 10u128.pow(moonbeam_tests_primitives::RELATIVE_PRICE_DECIMALS);
+	let native_amount_per_second =
+		frame_support::weights::constants::WEIGHT_REF_TIME_PER_SECOND as u128;
+	let relative_price = native_amount_per_second
+		.saturating_mul(precision_factor)
+		.checked_div(fee_per_second)
+		.ok_or(())?;
+
+	<MemoryFeeTrader as XcmFeeTrader>::set_asset_price(location, relative_price).map_err(|_| ())
+}
+
 fn currency_to_asset(currency_id: parachain::CurrencyId, amount: u128) -> Asset {
 	Asset {
 		id: AssetId(
@@ -1181,11 +1201,9 @@ fn transact_through_derivative_multilocation() {
 			None
 		));
 		// Root can set transact info
-		assert_ok!(XcmTransactor::set_fee_per_second(
-			parachain::RuntimeOrigin::root(),
-			Box::new(xcm::VersionedLocation::from(Location::parent())),
-			WEIGHT_REF_TIME_PER_SECOND as u128,
-		));
+		// Set fee per second using weight-trader (replaces old set_fee_per_second)
+		set_fee_per_second_for_location(Location::parent(), WEIGHT_REF_TIME_PER_SECOND as u128)
+			.expect("must succeed");
 	});
 
 	// Let's construct the call to know how much weight it is going to require
@@ -1728,11 +1746,9 @@ fn transact_through_sovereign() {
 			None
 		));
 		// Root can set transact info
-		assert_ok!(XcmTransactor::set_fee_per_second(
-			parachain::RuntimeOrigin::root(),
-			Box::new(xcm::VersionedLocation::from(Location::parent())),
-			WEIGHT_REF_TIME_PER_SECOND as u128,
-		));
+		// Set fee per second using weight-trader (replaces old set_fee_per_second)
+		set_fee_per_second_for_location(Location::parent(), WEIGHT_REF_TIME_PER_SECOND as u128)
+			.expect("must succeed");
 	});
 
 	let dest: Location = AccountKey20 {
@@ -1897,11 +1913,9 @@ fn transact_through_sovereign_fee_payer_none() {
 			None
 		));
 		// Root can set transact info
-		assert_ok!(XcmTransactor::set_fee_per_second(
-			parachain::RuntimeOrigin::root(),
-			Box::new(xcm::VersionedLocation::from(Location::parent())),
-			WEIGHT_REF_TIME_PER_SECOND as u128,
-		));
+		// Set fee per second using weight-trader (replaces old set_fee_per_second)
+		set_fee_per_second_for_location(Location::parent(), WEIGHT_REF_TIME_PER_SECOND as u128)
+			.expect("must succeed");
 	});
 
 	let derivative_address = derivative_account_id(para_a_account(), 0);
@@ -4505,11 +4519,9 @@ fn transact_through_signed_multilocation() {
 			Some(4000.into())
 		));
 		// Root can set transact info
-		assert_ok!(XcmTransactor::set_fee_per_second(
-			parachain::RuntimeOrigin::root(),
-			Box::new(xcm::VersionedLocation::from(Location::parent())),
-			WEIGHT_REF_TIME_PER_SECOND as u128,
-		));
+		// Set fee per second using weight-trader (replaces old set_fee_per_second)
+		set_fee_per_second_for_location(Location::parent(), WEIGHT_REF_TIME_PER_SECOND as u128)
+			.expect("must succeed");
 		ancestry = parachain::UniversalLocation::get().into();
 	});
 
@@ -4804,11 +4816,12 @@ fn transact_through_signed_multilocation_para_to_para() {
 			Some(4.into())
 		));
 		// Root can set transact info
-		assert_ok!(XcmTransactor::set_fee_per_second(
-			parachain::RuntimeOrigin::root(),
-			Box::new(xcm::VersionedLocation::from(para_b_balances.clone())),
+		// Set fee per second using weight-trader (replaces old set_fee_per_second)
+		set_fee_per_second_for_location(
+			para_b_balances.clone(),
 			parachain::ParaTokensPerSecond::get(),
-		));
+		)
+		.expect("must succeed");
 		ancestry = parachain::UniversalLocation::get().into();
 	});
 
@@ -4904,11 +4917,12 @@ fn transact_through_signed_multilocation_para_to_para_refund() {
 	let para_b_balances = Location::new(1, [Parachain(2), PalletInstance(1u8)]);
 
 	ParaA::execute_with(|| {
-		assert_ok!(XcmTransactor::set_fee_per_second(
-			parachain::RuntimeOrigin::root(),
-			Box::new(xcm::VersionedLocation::from(para_b_balances.clone())),
+		// Set fee per second using weight-trader (replaces old set_fee_per_second)
+		set_fee_per_second_for_location(
+			para_b_balances.clone(),
 			parachain::ParaTokensPerSecond::get(),
-		));
+		)
+		.expect("must succeed");
 		ancestry = parachain::UniversalLocation::get().into();
 	});
 
@@ -5018,11 +5032,12 @@ fn transact_through_signed_multilocation_para_to_para_ethereum() {
 			Some(4.into())
 		));
 		// Root can set transact info
-		assert_ok!(XcmTransactor::set_fee_per_second(
-			parachain::RuntimeOrigin::root(),
-			Box::new(xcm::VersionedLocation::from(para_b_balances.clone())),
+		// Set fee per second using weight-trader (replaces old set_fee_per_second)
+		set_fee_per_second_for_location(
+			para_b_balances.clone(),
 			parachain::ParaTokensPerSecond::get(),
-		));
+		)
+		.expect("must succeed");
 		ancestry = parachain::UniversalLocation::get().into();
 	});
 
@@ -5147,11 +5162,12 @@ fn transact_through_signed_multilocation_para_to_para_ethereum_no_proxy_fails() 
 			Some(4.into())
 		));
 		// Root can set transact info
-		assert_ok!(XcmTransactor::set_fee_per_second(
-			parachain::RuntimeOrigin::root(),
-			Box::new(xcm::VersionedLocation::from(para_b_balances.clone())),
+		// Set fee per second using weight-trader (replaces old set_fee_per_second)
+		set_fee_per_second_for_location(
+			para_b_balances.clone(),
 			parachain::ParaTokensPerSecond::get(),
-		));
+		)
+		.expect("must succeed");
 		ancestry = parachain::UniversalLocation::get().into();
 	});
 
@@ -5272,11 +5288,12 @@ fn transact_through_signed_multilocation_para_to_para_ethereum_proxy_succeeds() 
 			Some(4.into())
 		));
 		// Root can set transact info
-		assert_ok!(XcmTransactor::set_fee_per_second(
-			parachain::RuntimeOrigin::root(),
-			Box::new(xcm::VersionedLocation::from(para_b_balances.clone())),
+		// Set fee per second using weight-trader (replaces old set_fee_per_second)
+		set_fee_per_second_for_location(
+			para_b_balances.clone(),
 			parachain::ParaTokensPerSecond::get(),
-		));
+		)
+		.expect("must succeed");
 		ancestry = parachain::UniversalLocation::get().into();
 	});
 

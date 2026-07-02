@@ -1,5 +1,5 @@
-import { beforeAll, describeSuite, expect } from "@moonwall/cli";
-import { type ApiPromise, WsProvider } from "@polkadot/api";
+import { beforeAll, describeSuite, expect } from "moonwall";
+import type { ApiPromise } from "@polkadot/api";
 import { XcmFragment } from "../../../../helpers/xcm.js";
 import {
   registerForeignAsset,
@@ -51,7 +51,9 @@ describeSuite({
           .find(({ name }) => name.toString() === "Balances")!
           .index.toNumber();
 
-        const allowedAssets = await polkadotJs.call.xcmPaymentApi.queryAcceptablePaymentAssets(3);
+        const allowedAssets = (await polkadotJs.call.xcmPaymentApi.queryAcceptablePaymentAssets(
+          3
+        )) as any;
 
         expect(allowedAssets.isOk).to.be.true;
         // Should include the native asset + the foreign one
@@ -145,13 +147,19 @@ describeSuite({
           },
         };
 
-        const deliveryFees = await polkadotJs.call.xcmPaymentApi.queryDeliveryFees(
+        const deliveryFees = (await polkadotJs.call.xcmPaymentApi.queryDeliveryFees(
           dest,
-          xcmMessage
-        );
+          xcmMessage,
+          {
+            V3: {
+              Concrete: { parents: 1, interior: "Here" },
+            },
+          }
+        )) as any;
+        // Moonbeam does not charge delivery fees, so the API returns Ok with zero fees
         expect(deliveryFees.isOk).to.be.true;
-        // No delivery fees set for now
-        expect(deliveryFees.asOk.toHuman()["V3"]).to.be.empty;
+        const feeAssets = Object.values(deliveryFees.asOk.toJSON())[0] as any[];
+        expect(feeAssets.length).to.be.equal(0);
       },
     });
   },

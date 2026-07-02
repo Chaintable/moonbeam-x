@@ -32,6 +32,7 @@ cumulus-primitives-core = { workspace = true }
 
 # Moonbeam
 precompile-utils = { workspace = true, features = ["std", "testing"] }
+moonbeam-tests-primitives = { workspace = true }
 
 # Substrate
 pallet-balances = { workspace = true, features = ["std"] }
@@ -64,4 +65,13 @@ std = [
 	"sp-runtime/std",
 	"sp-std/std",
 	"xcm-primitives/std",
+	"cumulus-pallet-parachain-system/std",
+	"pallet-balances/std",
+	"pallet-message-queue/std",
+	"pallet-timestamp/std",
+	"sp-io/std",
+	"xcm-builder/std",
+	"xcm-executor/std",
+	"xcm/std",
+	"scale-info/std"
 ]

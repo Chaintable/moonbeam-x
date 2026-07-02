@@ -1,7 +1,13 @@
 import "@moonbeam-network/api-augment";
-import { describeSuite, expect, fetchCompiledContract } from "@moonwall/cli";
-import { ALITH_ADDRESS, createEthersTransaction } from "@moonwall/util";
+import {
+  ALITH_ADDRESS,
+  createEthersTransaction,
+  describeSuite,
+  expect,
+  fetchCompiledContract,
+} from "moonwall";
 import { encodeDeployData } from "viem";
+import { getBlockWithRetry } from "../../../../helpers/eth-transactions";
 
 describeSuite({
   id: "D023806",
@@ -54,7 +60,7 @@ describeSuite({
           ).length;
           log(`Transactions left in pool: ${txPoolSize}`);
 
-          if ((await context.viem().getBlock()).transactions.length === 0) {
+          if ((await getBlockWithRetry(context)).transactions.length === 0) {
             break;
           }
           blocks++;

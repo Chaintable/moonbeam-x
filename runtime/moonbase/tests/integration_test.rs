@@ -92,6 +92,47 @@ type XcmTransactorV2PCall =
 // TODO: can we construct a const U256...?
 const BASE_FEE_GENISIS: u128 = 10 * GIGAWEI / 4;
 
+/// Helper function to set fee per second for an asset location (for compatibility with old tests).
+/// Converts fee_per_second to relative_price and adds/edits the asset in the weight-trader.
+fn set_fee_per_second_for_location(
+	location: xcm::latest::prelude::Location,
+	fee_per_second: u128,
+) -> Result<(), ()> {
+	use frame_support::weights::WeightToFee as _;
+	let native_amount_per_second: u128 =
+		<moonbase_runtime::Runtime as pallet_xcm_weight_trader::Config>::WeightToFee::weight_to_fee(
+			&Weight::from_parts(WEIGHT_REF_TIME_PER_SECOND, 0),
+		)
+		.try_into()
+		.map_err(|_| ())?;
+	let precision_factor = 10u128.pow(pallet_xcm_weight_trader::RELATIVE_PRICE_DECIMALS);
+	let relative_price: u128 = if fee_per_second > 0u128 {
+		native_amount_per_second
+			.saturating_mul(precision_factor)
+			.saturating_div(fee_per_second)
+	} else {
+		0u128
+	};
+	if pallet_xcm_weight_trader::SupportedAssets::<moonbase_runtime::Runtime>::contains_key(
+		&location,
+	) {
+		let enabled =
+			pallet_xcm_weight_trader::SupportedAssets::<moonbase_runtime::Runtime>::get(&location)
+				.ok_or(())?
+				.0;
+		pallet_xcm_weight_trader::SupportedAssets::<moonbase_runtime::Runtime>::insert(
+			&location,
+			(enabled, relative_price),
+		);
+	} else {
+		pallet_xcm_weight_trader::SupportedAssets::<moonbase_runtime::Runtime>::insert(
+			&location,
+			(true, relative_price),
+		);
+	}
+	Ok(())
+}
+
 #[test]
 fn xcmp_queue_controller_origin_is_root() {
 	// important for the XcmExecutionManager impl of PauseExecution which uses root origin
@@ -1082,7 +1123,7 @@ fn xtokens_precompiles_transfer() {
 						weight: 4_000_000,
 					},
 				)
-				.expect_cost(253269)
+				.expect_cost(253527)
 				.expect_no_logs()
 				// We expect an evm subcall ERC20.burnFrom
 				.with_subcall_handle(move |subcall| {
@@ -1173,7 +1214,7 @@ fn xtokens_precompiles_transfer_multiasset() {
 						weight: 4_000_000,
 					},
 				)
-				.expect_cost(253269)
+				.expect_cost(253527)
 				.expect_no_logs()
 				// We expect an evm subcall ERC20.burnFrom
 				.with_subcall_handle(move |subcall| {
@@ -1257,7 +1298,7 @@ fn xtokens_precompiles_transfer_native() {
 						weight: 4_000_000,
 					},
 				)
-				.expect_cost(101669)
+				.expect_cost(101927)
 				.expect_no_logs()
 				.execute_returns(());
 		})
@@ -1705,12 +1746,9 @@ fn transactor_cannot_use_more_than_max_weight() {
 				20000.into(),
 				None
 			));
-			// Root can set transact info
-			assert_ok!(XcmTransactor::set_fee_per_second(
-				root_origin(),
-				Box::new(xcm::VersionedLocation::from(Location::parent())),
-				1,
-			));
+			// Set fee per second using weight-trader (replaces old set_fee_per_second)
+			set_fee_per_second_for_location(xcm::latest::prelude::Location::parent(), 1)
+				.expect("must succeed");
 
 			assert_noop!(
 				XcmTransactor::transact_through_derivative(
@@ -1819,12 +1857,18 @@ fn transact_through_signed_precompile_works_v1() {
 				Weight::from_parts(200_000, (xcm_primitives::DEFAULT_PROOF_SIZE) + 4000),
 				Some(4000.into())
 			));
-			// Root can set transact info
-			assert_ok!(XcmTransactor::set_fee_per_second(
-				root_origin(),
-				Box::new(xcm::VersionedLocation::from(Location::parent())),
-				1,
-			));
+
+			// Set fee per second using weight-trader (replaces old set_fee_per_second).
+			// With the new FeeTrader semantics, very small `fee_per_second` values combined
+			// with small weights can legitimately produce a zero fee, which the relay-chain
+			// XCM barrier rejects. To keep the v1 precompile test meaningful while adapting
+			// to the new semantics, we choose a `fee_per_second` large enough that the
+			// computed fee for this test's weight (15_000) is at least 1 unit.
+			set_fee_per_second_for_location(
+				xcm::latest::prelude::Location::parent(),
+				100_000_000, // any value >= WEIGHT_REF_TIME_PER_SECOND / 15_000 works
+			)
+			.expect("must succeed");
 
 			Precompiles::new()
 				.prepare_test(
@@ -1837,7 +1881,7 @@ fn transact_through_signed_precompile_works_v1() {
 						call: bytes.into(),
 					},
 				)
-				.expect_cost(31105)
+				.expect_cost(31234)
 				.expect_no_logs()
 				.execute_returns(());
 		});
@@ -1877,7 +1921,7 @@ fn transact_through_signed_precompile_works_v2() {
 						overall_weight: total_weight,
 					},
 				)
-				.expect_cost(31105)
+				.expect_cost(31234)
 				.expect_no_logs()
 				.execute_returns(());
 		});
@@ -1959,7 +2003,7 @@ fn author_mapping_precompile_associate_update_and_clear() {
 						nimbus_id: [1u8; 32].into(),
 					},
 				)
-				.expect_cost(19931)
+				.expect_cost(19929)
 				.expect_no_logs()
 				.execute_returns(());
 
@@ -1981,7 +2025,7 @@ fn author_mapping_precompile_associate_update_and_clear() {
 						new_nimbus_id: [2u8; 32].into(),
 					},
 				)
-				.expect_cost(19448)
+				.expect_cost(19455)
 				.expect_no_logs()
 				.execute_returns(());
 
@@ -2002,7 +2046,7 @@ fn author_mapping_precompile_associate_update_and_clear() {
 						nimbus_id: [2u8; 32].into(),
 					},
 				)
-				.expect_cost(19942)
+				.expect_cost(19945)
 				.expect_no_logs()
 				.execute_returns(());
 
@@ -2045,7 +2089,7 @@ fn author_mapping_register_and_set_keys() {
 						.into(),
 					},
 				)
-				.expect_cost(22448)
+				.expect_cost(22438)
 				.expect_no_logs()
 				.execute_returns(());
 
@@ -2070,7 +2114,7 @@ fn author_mapping_register_and_set_keys() {
 						.into(),
 					},
 				)
-				.expect_cost(22448)
+				.expect_cost(22438)
 				.expect_no_logs()
 				.execute_returns(());
 

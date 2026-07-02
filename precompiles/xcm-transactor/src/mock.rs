@@ -23,6 +23,7 @@ use frame_support::{
 	traits::{Everything, PalletInfo as PalletInfoTrait},
 	weights::{RuntimeDbWeight, Weight},
 };
+use moonbeam_tests_primitives::MemoryFeeTrader;
 use pallet_evm::{
 	EnsureAddressNever, EnsureAddressRoot, FrameSystemAccountProvider, GasWeightMapping,
 };
@@ -217,6 +218,7 @@ impl pallet_evm::Config for Runtime {
 	type ChainId = ();
 	type OnChargeTransaction = ();
 	type BlockGasLimit = BlockGasLimit;
+	type TransactionGasLimit = ();
 	type BlockHashMapping = pallet_evm::SubstrateBlockHashMapping<Self>;
 	type FindAuthor = ();
 	type OnCreate = ();
@@ -348,6 +350,7 @@ impl pallet_xcm_transactor::Config for Runtime {
 	type HrmpManipulatorOrigin = frame_system::EnsureRoot<AccountId>;
 	type HrmpOpenOrigin = frame_system::EnsureRoot<AccountId>;
 	type MaxHrmpFee = ();
+	type FeeTrader = MemoryFeeTrader;
 }
 
 // We need to use the encoding from the relay mock runtime

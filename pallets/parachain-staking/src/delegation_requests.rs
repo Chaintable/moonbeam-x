@@ -18,8 +18,8 @@
 
 use crate::pallet::{
 	BalanceOf, CandidateInfo, Config, DelegationScheduledRequests,
-	DelegationScheduledRequestsPerCollator, DelegatorState, Error, Event, Pallet, Round,
-	RoundIndex, Total,
+	DelegationScheduledRequestsPerCollator, DelegationScheduledRequestsSummaryMap, DelegatorState,
+	Error, Event, Pallet, Round, RoundIndex, Total,
 };
 use crate::weights::WeightInfo;
 use crate::{auto_compound::AutoCompoundDelegations, Delegator};
@@ -157,6 +157,11 @@ impl<T: Config> Pallet<T> {
 			delegator.clone(),
 			scheduled_requests,
 		);
+		<DelegationScheduledRequestsSummaryMap<T>>::insert(
+			collator.clone(),
+			delegator.clone(),
+			DelegationAction::Revoke(bonded_amount),
+		);
 		<DelegatorState<T>>::insert(delegator.clone(), state);
 
 		Self::deposit_event(Event::DelegationRevocationScheduled {
@@ -212,6 +217,8 @@ impl<T: Config> Pallet<T> {
 				post_info: Some(actual_weight).into(),
 				error: <Error<T>>::DelegationDNE.into(),
 			})?;
+		// Per-request safety: a single decrease cannot exceed the current delegation
+		// and must leave at least MinDelegation on that delegation.
 		ensure!(
 			bonded_amount > decrease_amount,
 			DispatchErrorWithPostInfo {
@@ -219,9 +226,24 @@ impl<T: Config> Pallet<T> {
 				error: <Error<T>>::DelegatorBondBelowMin.into(),
 			},
 		);
-		let new_amount: BalanceOf<T> = (bonded_amount - decrease_amount).into();
+
+		// Cumulative safety: multiple pending Decrease requests for the same
+		// (collator, delegator) pair must also respect the MinDelegation
+		// constraint when applied together. Otherwise, snapshots can become
+		// inconsistent even if each request, in isolation, appears valid.
+		let pending_decrease_total: BalanceOf<T> = scheduled_requests
+			.iter()
+			.filter_map(|req| match req.action {
+				DelegationAction::Decrease(amount) => Some(amount),
+				_ => None,
+			})
+			.fold(BalanceOf::<T>::zero(), |acc, amount| {
+				acc.saturating_add(amount)
+			});
+		let total_decrease_after = pending_decrease_total.saturating_add(decrease_amount);
+		let new_amount_after_all = bonded_amount.saturating_sub(total_decrease_after);
 		ensure!(
-			new_amount >= T::MinDelegation::get(),
+			new_amount_after_all >= T::MinDelegation::get(),
 			DispatchErrorWithPostInfo {
 				post_info: Some(actual_weight).into(),
 				error: <Error<T>>::DelegationBelowMin.into(),
@@ -262,6 +284,15 @@ impl<T: Config> Pallet<T> {
 			delegator.clone(),
 			scheduled_requests,
 		);
+		// Update summary map: accumulate the new decrease amount
+		<DelegationScheduledRequestsSummaryMap<T>>::mutate(&collator, &delegator, |entry| {
+			*entry = Some(match entry.take() {
+				Some(DelegationAction::Decrease(existing)) => {
+					DelegationAction::Decrease(existing.saturating_add(decrease_amount))
+				}
+				_ => DelegationAction::Decrease(decrease_amount),
+			});
+		});
 		<DelegatorState<T>>::insert(delegator.clone(), state);
 
 		Self::deposit_event(Event::DelegationDecreaseScheduled {
@@ -289,6 +320,29 @@ impl<T: Config> Pallet<T> {
 				error: <Error<T>>::PendingDelegationRequestDNE.into(),
 			},
 		)?;
+
+		match &request.action {
+			DelegationAction::Revoke(_) => {
+				<DelegationScheduledRequestsSummaryMap<T>>::remove(&collator, &delegator);
+			}
+			DelegationAction::Decrease(amount) => {
+				let amount = *amount;
+				<DelegationScheduledRequestsSummaryMap<T>>::mutate_exists(
+					&collator,
+					&delegator,
+					|entry| {
+						if let Some(DelegationAction::Decrease(existing)) = entry {
+							let remaining = existing.saturating_sub(amount);
+							if remaining.is_zero() {
+								*entry = None;
+							} else {
+								*existing = remaining;
+							}
+						}
+					},
+				);
+			}
+		}
 
 		if scheduled_requests.is_empty() {
 			<DelegationScheduledRequestsPerCollator<T>>::mutate(&collator, |c| {
@@ -377,6 +431,9 @@ impl<T: Config> Pallet<T> {
 
 				// remove delegation from auto-compounding info
 				<AutoCompoundDelegations<T>>::remove_auto_compound(&collator, &delegator);
+
+				// clear the summary entry
+				<DelegationScheduledRequestsSummaryMap<T>>::remove(&collator, &delegator);
 
 				// remove delegation from collator state delegations
 				Self::delegator_leaves_candidate(collator.clone(), delegator.clone(), amount)
@@ -480,6 +537,21 @@ impl<T: Config> Pallet<T> {
 									scheduled_requests,
 								);
 							}
+							// Update summary map: subtract executed decrease
+							<DelegationScheduledRequestsSummaryMap<T>>::mutate_exists(
+								&collator,
+								&delegator,
+								|entry| {
+									if let Some(DelegationAction::Decrease(existing)) = entry {
+										let remaining = existing.saturating_sub(amount);
+										if remaining.is_zero() {
+											*entry = None;
+										} else {
+											*existing = remaining;
+										}
+									}
+								},
+							);
 							<DelegatorState<T>>::insert(delegator.clone(), state);
 							Self::deposit_event(Event::DelegationDecreased {
 								delegator,
@@ -528,6 +600,7 @@ impl<T: Config> Pallet<T> {
 
 		state.less_total = state.less_total.saturating_sub(total_amount);
 		<DelegationScheduledRequests<T>>::remove(collator, delegator);
+		<DelegationScheduledRequestsSummaryMap<T>>::remove(collator, delegator);
 		<DelegationScheduledRequestsPerCollator<T>>::mutate(collator, |c| {
 			*c = c.saturating_sub(1);
 		});
@@ -543,9 +616,10 @@ impl<T: Config> Pallet<T> {
 		collator: &T::AccountId,
 		delegator: &T::AccountId,
 	) -> bool {
-		<DelegationScheduledRequests<T>>::get(collator, delegator)
-			.iter()
-			.any(|req| matches!(req.action, DelegationAction::Revoke(_)))
+		matches!(
+			<DelegationScheduledRequestsSummaryMap<T>>::get(collator, delegator),
+			Some(DelegationAction::Revoke(_))
+		)
 	}
 }
 

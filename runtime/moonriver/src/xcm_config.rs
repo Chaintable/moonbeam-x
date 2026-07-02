@@ -21,7 +21,8 @@ use super::{
 	bridge_config, governance, AccountId, AssetId, Balance, Balances, BridgeXcmOverMoonbeam,
 	EmergencyParaXcm, Erc20XcmBridge, EvmForeignAssets, MaintenanceMode, MessageQueue,
 	OpenTechCommitteeInstance, ParachainInfo, ParachainSystem, Perbill, PolkadotXcm, Runtime,
-	RuntimeBlockWeights, RuntimeCall, RuntimeEvent, RuntimeOrigin, Treasury, XcmpQueue,
+	RuntimeBlockWeights, RuntimeCall, RuntimeEvent, RuntimeOrigin, Treasury, XcmWeightTrader,
+	XcmpQueue,
 };
 
 use super::moonriver_weights;
@@ -667,6 +668,7 @@ impl pallet_xcm_transactor::Config for Runtime {
 	type HrmpManipulatorOrigin = GeneralAdminOrRoot;
 	type HrmpOpenOrigin = FastGeneralAdminOrRoot;
 	type MaxHrmpFee = xcm_builder::Case<MaxHrmpRelayFee>;
+	type FeeTrader = XcmWeightTrader;
 }
 
 parameter_types! {
@@ -680,8 +682,8 @@ parameter_types! {
 		].into()
 	};
 
-	// To be able to support almost all erc20 implementations,
-	// we provide a sufficiently hight gas limit.
+	// Default gas limit for ERC20 transfers executed through XCM when no
+	// gas_limit override is provided.
 	pub Erc20XcmBridgeTransferGasLimit: u64 = 400_000;
 }
 
@@ -732,7 +734,10 @@ impl pallet_moonbeam_foreign_assets::Config for Runtime {
 	type OnForeignAssetCreated = ();
 	type MaxForeignAssets = ConstU32<256>;
 	type WeightInfo = moonriver_weights::pallet_moonbeam_foreign_assets::WeightInfo<Runtime>;
+	#[cfg(not(feature = "runtime-benchmarks"))]
 	type XcmLocationToH160 = LocationToH160;
+	#[cfg(feature = "runtime-benchmarks")]
+	type XcmLocationToH160 = (LocationToH160, super::BenchAccountIdConverter<H160>);
 	type ForeignAssetCreationDeposit = dynamic_params::xcm_config::ForeignAssetCreationDeposit;
 	type Currency = Balances;
 	type Balance = Balance;

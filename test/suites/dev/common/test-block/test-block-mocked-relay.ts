@@ -1,12 +1,12 @@
 import "@moonbeam-network/api-augment";
-import { expect, describeSuite, beforeAll } from "@moonwall/cli";
+import { expect, describeSuite, beforeAll } from "moonwall";
 import type { CumulusPrimitivesParachainInherentParachainInherentData } from "@polkadot/types/lookup";
 
 describeSuite({
   id: "D010105",
   title: "Block - Mocked relaychain block",
   foundationMethods: "dev",
-  testCases: ({ context, it, log }) => {
+  testCases: ({ context, it }) => {
     beforeAll(async () => {
       expect(await context.viem().getBlockNumber()).toBe(0n);
     });
@@ -25,7 +25,7 @@ describeSuite({
             blockData.block.extrinsics[index].method
               .args[0] as CumulusPrimitivesParachainInherentParachainInherentData
           ).validationData.relayParentNumber.toString()
-        ).to.eq("0");
+        ).to.eq("1");
         const blockResult2 = await context.createBlock();
         const blockData2 = await context.polkadotJs().rpc.chain.getBlock(blockResult2.block.hash);
         expect(
@@ -33,7 +33,7 @@ describeSuite({
             blockData2.block.extrinsics[index].method
               .args[0] as CumulusPrimitivesParachainInherentParachainInherentData
           ).validationData.relayParentNumber.toString()
-        ).to.eq("1");
+        ).to.eq("2");
       },
     });
   },

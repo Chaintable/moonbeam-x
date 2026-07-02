@@ -5,14 +5,18 @@ import {
   expect,
   deployCreateCompiledContract,
   beforeAll,
-} from "@moonwall/cli";
-import { ConstantStore } from "../../../../helpers";
+} from "moonwall";
+import {
+  ConstantStore,
+  EIP_7825_MAX_TRANSACTION_GAS_LIMIT,
+  TX_MAX_GAS_LIMIT,
+} from "../../../../helpers";
 
 describeSuite({
   id: "D010103",
   title: "Block creation - suite 2",
   foundationMethods: "dev",
-  testCases: ({ context, it, log }) => {
+  testCases: ({ context, it }) => {
     let specVersion: number;
     beforeAll(async () => {
       specVersion = (await context.polkadotJs().runtimeVersion.specVersion).toNumber();
@@ -21,11 +25,11 @@ describeSuite({
     for (const txnType of TransactionTypes) {
       it({
         id: `T0${TransactionTypes.indexOf(txnType) + 1}`,
-        title: `${txnType} should be allowed to the max block gas`,
+        title: `${txnType} should be allowed up to EIP-7825 transaction gas limit cap`,
         test: async function () {
           const { hash, status } = await deployCreateCompiledContract(context, "MultiplyBy7", {
             type: txnType,
-            gas: ConstantStore(context).EXTRINSIC_GAS_LIMIT.get(specVersion),
+            gas: EIP_7825_MAX_TRANSACTION_GAS_LIMIT,
           });
           expect(status).toBe("success");
           const receipt = await context.viem().getTransactionReceipt({ hash });
@@ -35,16 +39,16 @@ describeSuite({
 
       it({
         id: `T0${TransactionTypes.indexOf(txnType) * 2 + 1}`,
-        title: `${txnType} should fail setting it over the max block gas`,
+        title: `${txnType} should fail exceeding transaction gas limit cap`,
         test: async function () {
           await expect(
             async () =>
               await deployCreateCompiledContract(context, "MultiplyBy7", {
                 type: txnType,
-                gas: ConstantStore(context).EXTRINSIC_GAS_LIMIT.get(specVersion) + 1n,
+                gas: TX_MAX_GAS_LIMIT + 1n,
               }),
             "Transaction should be reverted but instead contract deployed"
-          ).rejects.toThrowError("exceeds block gas limit");
+          ).rejects.toThrowError("exceeds transaction gas limit cap");
         },
       });
     }

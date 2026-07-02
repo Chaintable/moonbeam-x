@@ -1,6 +1,11 @@
 import "@moonbeam-network/api-augment";
-import { BALTATHAR_SESSION_ADDRESS, generateKeyringPair } from "@moonwall/util";
-import { expect, describeSuite, beforeAll } from "@moonwall/cli";
+import {
+  BALTATHAR_SESSION_ADDRESS,
+  beforeAll,
+  describeSuite,
+  expect,
+  generateKeyringPair,
+} from "moonwall";
 import type { ApiPromise } from "@polkadot/api";
 import { getMappingInfo } from "../../../../helpers";
 
@@ -8,7 +13,7 @@ describeSuite({
   id: "D020204",
   title: "Author Mapping - Fail without deposit",
   foundationMethods: "dev",
-  testCases: ({ context, log, it }) => {
+  testCases: ({ context, it }) => {
     let api: ApiPromise;
 
     beforeAll(async function () {
@@ -66,7 +71,7 @@ describeSuite({
             // Fourth extrinsic
             case 3:
               expect(section === "authorMapping" && method === "addAssociation").to.be.true;
-              expect(events.length === 6);
+              expect(events.length).to.equal(6);
               expect(api.events.system.NewAccount.is(events[2].event)).to.be.true;
               expect(api.events.balances.Endowed.is(events[3].event)).to.be.true;
               expect(api.events.system.ExtrinsicFailed.is(events[5].event)).to.be.true;

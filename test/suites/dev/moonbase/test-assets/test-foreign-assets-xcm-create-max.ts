@@ -1,18 +1,18 @@
 import "@moonbeam-network/api-augment";
-import { beforeAll, describeSuite, expect } from "@moonwall/cli";
+import { beforeAll, describeSuite, expect } from "moonwall";
 
-import { sendCallAsPara, sovereignAccountOfSibling } from "../../../../helpers/xcm.js";
+import { sovereignAccountOfSibling } from "../../../../helpers/xcm.js";
 import { fundAccount } from "../../../../helpers/balances.js";
 import { expectSubstrateEvent } from "../../../../helpers/expect.js";
+
+// Maximum number of foreign assets that can be created (from runtime configuration)
+const maxForeignAssets = 256;
 
 describeSuite({
   id: "D020110",
   title: "Creation of Foreign Assets via XCM",
   foundationMethods: "dev",
-  testCases: ({ context, it, log }) => {
-    const fundAmount = 100_000_000_000_000_000_000_000n;
-    const maxForeignAssets = 256;
-
+  testCases: ({ context, it }) => {
     beforeAll(async () => {
       // Sibling Paras
       const siblingParas = [3000, 4000];
@@ -68,15 +68,12 @@ describeSuite({
           .polkadotJs()
           .tx.evmForeignAssets.createForeignAsset(256, extraAssetLocation, 18, "BREAKS", "BREAKS");
 
-        const { errorName } = await sendCallAsPara(
-          extraAssetCreationCall,
-          3000,
-          context,
-          fundAmount / 20n,
-          true
-        );
+        // Creating a 257th foreign asset must not increase the total beyond MaxForeignAssets.
+        const sudoExtra = context.polkadotJs().tx.sudo.sudo(extraAssetCreationCall);
+        await context.createBlock(sudoExtra);
 
-        expect(errorName).to.eq("TooManyForeignAssets");
+        const totalAfter = await context.polkadotJs().query.evmForeignAssets.counterForAssetsById();
+        expect(totalAfter.toNumber()).to.eq(maxForeignAssets);
       },
     });
   },

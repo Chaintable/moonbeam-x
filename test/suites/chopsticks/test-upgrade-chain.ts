@@ -1,18 +1,18 @@
 import "@moonbeam-network/api-augment";
 import {
   MoonwallContext,
+  alith,
   beforeAll,
   describeSuite,
   expect,
   type ChopsticksContext,
-} from "@moonwall/cli";
-import { alith } from "@moonwall/util";
+} from "moonwall";
 import type { ApiPromise } from "@polkadot/api";
 import type { HexString } from "@polkadot/util/types";
 import type { u32 } from "@polkadot/types";
 import { hexToU8a, u8aConcat, u8aToHex } from "@polkadot/util";
 import { blake2AsHex, xxhashAsU8a } from "@polkadot/util-crypto";
-import { parseEther } from "ethers";
+import { parseEther } from "viem";
 import { existsSync, readFileSync } from "node:fs";
 
 const hash = (prefix: HexString, suffix: Uint8Array) => {
@@ -25,8 +25,68 @@ const upgradeRestrictionSignal = (paraId: u32) => {
   return hash(prefix, paraId.toU8a());
 };
 
+const wait = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+
+const isRetriableChopsticksBlockError = (error: unknown): boolean => {
+  const message = error instanceof Error ? error.message : String(error);
+  return (
+    message.includes("Failed to apply inherents") ||
+    message.includes("InvalidNumberOfDescendants") ||
+    message.includes("Unable to verify provided relay parent descendants")
+  );
+};
+
+const createEmptyBlockWithRetry = async (
+  context: ChopsticksContext,
+  api: ApiPromise,
+  options?: { maxAttempts?: number; delayMs?: number }
+) => {
+  const maxAttempts = options?.maxAttempts ?? 5;
+  const delayMs = options?.delayMs ?? 500;
+
+  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+    const currentHeight = (await api.rpc.chain.getHeader()).number.toNumber();
+
+    try {
+      await context.createBlock();
+    } catch (error) {
+      if (attempt < maxAttempts && isRetriableChopsticksBlockError(error)) {
+        await wait(delayMs * attempt);
+        continue;
+      }
+
+      throw error;
+    }
+
+    const newHeight = (await api.rpc.chain.getHeader()).number.toNumber();
+    if (newHeight > currentHeight) {
+      return;
+    }
+
+    if (attempt < maxAttempts) {
+      await wait(delayMs * attempt);
+      continue;
+    }
+
+    expect(newHeight - currentHeight).to.be.equal(1);
+  }
+};
+
+const createEmptyBlocksWithRetry = async (
+  context: ChopsticksContext,
+  api: ApiPromise,
+  count: number
+) => {
+  for (let i = 0; i < count; i++) {
+    await createEmptyBlockWithRetry(context, api);
+  }
+};
+
 const upgradeRuntime = async (context: ChopsticksContext) => {
   const path = (await MoonwallContext.getContext()).rtUpgradePath;
+  if (!path) {
+    throw new Error("Runtime wasm path not configured");
+  }
   if (!existsSync(path)) {
     throw new Error(`Runtime wasm not found at path: ${path}`);
   }
@@ -41,7 +101,7 @@ const upgradeRuntime = async (context: ChopsticksContext) => {
     method: "authorizedUpgrade",
     methodParams: `${rtHash}01`, // 01 is for the RT ver check = true
   });
-  await context.createBlock();
+  await createEmptyBlockWithRetry(context, api);
 
   await api.tx.system.applyAuthorizedUpgrade(rtHex).signAndSend(signer);
 
@@ -87,7 +147,7 @@ describeSuite({
       title: "Can create new blocks",
       test: async () => {
         const currentHeight = (await api.rpc.chain.getHeader()).number.toNumber();
-        await context.createBlock({ count: 2 });
+        await createEmptyBlocksWithRetry(context, api, 2);
         const newHeight = (await api.rpc.chain.getHeader()).number.toNumber();
         expect(newHeight - currentHeight).to.be.equal(2);
       },
@@ -106,7 +166,7 @@ describeSuite({
           // Some multi-migration might take a lot of blocks to complete, so we wait for 16 blocks to be safe.
           // Note that we must wait for one block at a time otherwise the request will timeout.
           for (let i = 0; i < 16; i++) {
-            await context.createBlock();
+            await createEmptyBlockWithRetry(context, api);
           }
 
           const balanceBefore = (
@@ -115,7 +175,7 @@ describeSuite({
           await api.tx.balances
             .transferAllowDeath(DUMMY_ACCOUNT, parseEther("1"))
             .signAndSend(alith);
-          await context.createBlock({ count: 2 });
+          await createEmptyBlocksWithRetry(context, api, 2);
           const balanceAfter = (await api.query.system.account(DUMMY_ACCOUNT)).data.free.toBigInt();
           expect(balanceBefore < balanceAfter).to.be.true;
         }

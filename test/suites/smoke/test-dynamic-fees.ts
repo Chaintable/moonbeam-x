@@ -1,12 +1,11 @@
 import "@moonbeam-network/api-augment/moonbase";
-import { beforeAll, describeSuite, expect } from "@moonwall/cli";
-import { WEIGHT_PER_GAS, getBlockArray } from "@moonwall/util";
+import { WEIGHT_PER_GAS, beforeAll, describeSuite, expect, getBlockArray } from "moonwall";
 import type { ApiPromise } from "@polkadot/api";
 import type { GenericExtrinsic } from "@polkadot/types";
 import type { u128, u32 } from "@polkadot/types-codec";
 import type {
   EthereumBlock,
-  EthereumReceiptReceiptV3,
+  EthereumReceiptReceiptV4,
   FpRpcTransactionStatus,
   FrameSupportDispatchPerDispatchClassWeight,
   FrameSystemEventRecord,
@@ -32,12 +31,11 @@ type BlockFilteredRecord = {
   nextFeeMultiplier: u128;
   ethBlock: EthereumBlock;
   extrinsics: GenericExtrinsic<AnyTuple>[];
-  ethersTransactionsFees: bigint[];
   baseFeePerGasInGwei: string;
   transactionStatuses: FpRpcTransactionStatus[];
   weights: FrameSupportDispatchPerDispatchClassWeight;
   events: FrameSystemEventRecord[];
-  receipts: EthereumReceiptReceiptV3[];
+  receipts: EthereumReceiptReceiptV4[];
   normalizedRefTime: Perbill;
   normalizedProofSize: Perbill;
   limitingDimension: string;
@@ -161,11 +159,6 @@ describeSuite({
         const transactionStatuses = (
           await apiAt.query.ethereum.currentTransactionStatuses()
         ).unwrapOrDefault();
-        const ethersTransactionsFees = await Promise.all(
-          ethersBlock!.transactions.map(
-            async (hash) => (await context.ethers().provider!.getTransactionReceipt(hash))!.gasUsed
-          )
-        );
         const weights = await apiAt.query.system.blockWeight();
         const receipts = (await apiAt.query.ethereum.currentReceipts()).unwrapOr([]);
         const events = await apiAt.query.system.events();
@@ -225,7 +218,6 @@ describeSuite({
           blockNum,
           nextFeeMultiplier,
           ethBlock,
-          ethersTransactionsFees,
           transactionStatuses,
           extrinsics: signedBlock.block.extrinsics,
           baseFeePerGasInGwei: ethers.formatUnits(ethersBlock!.baseFeePerGas!, "gwei"),
@@ -524,10 +516,12 @@ describeSuite({
           return;
         }
 
-        const extractGasAmount = (item: EthereumReceiptReceiptV3) => {
+        const extractGasAmount = (item: EthereumReceiptReceiptV4) => {
           switch (true) {
             case item.isEip1559:
               return item.asEip1559.usedGas.toBigInt();
+            case (item as any).isEip7702:
+              return (item as any).asEip7702.usedGas.toBigInt();
             case item.isEip2930:
               return item.asEip2930.usedGas.toBigInt();
             case item.isLegacy:

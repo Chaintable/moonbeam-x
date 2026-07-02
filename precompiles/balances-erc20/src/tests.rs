@@ -18,6 +18,7 @@ use std::str::from_utf8;
 
 use crate::{eip2612::Eip2612, mock::*, *};
 
+use fp_evm::MAX_TRANSACTION_GAS_LIMIT;
 use libsecp256k1::{sign, Message, SecretKey};
 use precompile_utils::testing::*;
 use sha3::{Digest, Keccak256};
@@ -280,7 +281,7 @@ fn transfer() {
 						value: 400.into(),
 					},
 				)
-				.expect_cost(173835756) // 1 weight => 1 gas in mock
+				.expect_cost(8709)
 				.expect_log(log3(
 					Precompile1,
 					SELECTOR_LOG_TRANSFER,
@@ -370,7 +371,7 @@ fn transfer_from() {
 						value: 400.into(),
 					},
 				)
-				.expect_cost(173835756) // 1 weight => 1 gas in mock
+				.expect_cost(8709)
 				.expect_log(log3(
 					Precompile1,
 					SELECTOR_LOG_TRANSFER,
@@ -466,7 +467,7 @@ fn transfer_from_self() {
 						value: 400.into(),
 					},
 				)
-				.expect_cost(173835756) // 1 weight => 1 gas in mock
+				.expect_cost(8709)
 				.expect_log(log3(
 					Precompile1,
 					SELECTOR_LOG_TRANSFER,
@@ -570,13 +571,13 @@ fn deposit(data: Vec<u8>) {
 				CryptoAlith.into(),
 				Precompile1.into(),
 				data,
-				From::from(500), // amount sent
-				u64::MAX,        // gas limit
-				0u32.into(),     // gas price
-				None,            // max priority
-				None,            // nonce
-				vec![],          // access list
-				vec![],          // authorization list
+				From::from(500),                     // amount sent
+				MAX_TRANSACTION_GAS_LIMIT.low_u64(), // gas limit
+				0u32.into(),                         // gas price
+				None,                                // max priority
+				None,                                // nonce
+				vec![],                              // access list
+				vec![],                              // authorization list
 			)
 			.expect("it works");
 
@@ -687,13 +688,13 @@ fn deposit_zero() {
 				CryptoAlith.into(),
 				Precompile1.into(),
 				PCall::deposit {}.into(),
-				From::from(0), // amount sent
-				u64::MAX,      // gas limit
-				0u32.into(),   // gas price
-				None,          // max priority
-				None,          // nonce
-				vec![],        // access list
-				vec![],        // authorization list
+				From::from(0),                       // amount sent
+				MAX_TRANSACTION_GAS_LIMIT.low_u64(), // gas limit
+				0u32.into(),                         // gas price
+				None,                                // max priority
+				None,                                // nonce
+				vec![],                              // access list
+				vec![],                              // authorization list
 			)
 			.expect("it works");
 
@@ -1135,6 +1136,67 @@ fn permit_invalid_deadline() {
 				.expect_cost(0) // TODO: Test db read/write costs
 				.expect_no_logs()
 				.execute_returns(U256::from(0u8));
+		});
+}
+
+#[test]
+fn permit_expired_deadline_milliseconds() {
+	ExtBuilder::default()
+		.with_balances(vec![(CryptoAlith.into(), 1000)])
+		.build()
+		.execute_with(|| {
+			let one_second = 1;
+
+			let owner: H160 = CryptoAlith.into();
+			let spender: H160 = Bob.into();
+			let value: U256 = 500u16.into();
+			let deadline: U256 = one_second.into();
+
+			let permit = Eip2612::<Runtime, NativeErc20Metadata>::generate_permit(
+				Precompile1.into(),
+				owner,
+				spender,
+				value,
+				0u8.into(), // nonce
+				deadline,
+			);
+
+			let secret_key = SecretKey::parse(&alith_secret_key()).unwrap();
+			let message = Message::parse(&permit);
+			let (rs, v) = sign(&message, &secret_key);
+
+			// (deadline_ms + 1ms) = should revert with "Permit expired"
+			pallet_timestamp::Pallet::<Runtime>::set_timestamp((one_second * 1000) + 1);
+
+			precompiles()
+				.prepare_test(
+					Charlie, // can be anyone
+					Precompile1,
+					PCall::eip2612_permit {
+						owner: Address(owner),
+						spender: Address(spender),
+						value,
+						deadline,
+						v: v.serialize(),
+						r: rs.r.b32().into(),
+						s: rs.s.b32().into(),
+					},
+				)
+				.execute_reverts(|output| output == b"Permit expired");
+
+			// Allowance should remain zero
+			precompiles()
+				.prepare_test(
+					CryptoAlith,
+					Precompile1,
+					PCall::allowance {
+						owner: Address(CryptoAlith.into()),
+						spender: Address(Bob.into()),
+					},
+				)
+				.expect_cost(0)
+				.expect_no_logs()
+				.execute_returns(U256::from(0u16));
 		});
 }
 

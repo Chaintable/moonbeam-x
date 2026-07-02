@@ -1,16 +1,11 @@
 import "@moonbeam-network/api-augment";
-import {
-  customDevRpcRequest,
-  deployCreateCompiledContract,
-  describeSuite,
-  expect,
-} from "@moonwall/cli";
+import { customDevRpcRequest, deployCreateCompiledContract, describeSuite, expect } from "moonwall";
 
 describeSuite({
   id: "D021603",
   title: "Filter Block API",
   foundationMethods: "dev",
-  testCases: ({ context, it, log }) => {
+  testCases: ({ context, it }) => {
     it({
       id: "T01",
       title: "should return block information",
@@ -78,11 +73,17 @@ describeSuite({
             topics: receipt.logs[0].topics,
           },
         ]);
-        const poll = await customDevRpcRequest("eth_getFilterChanges", [filterId]);
+        const changes = await customDevRpcRequest("eth_getFilterChanges", [filterId]);
+        expect(changes.length).to.be.eq(0);
 
-        expect(poll.length).to.be.eq(1);
-        expect(poll[0].address).to.be.eq(contractAddress);
-        expect(poll[0].topics).to.be.deep.eq(receipt.logs[0].topics);
+        // `eth_getFilterLogs` scans the filter block range. `eth_getFilterChanges` only streams
+        // new logs from Frontier's logs journal after the filter was created, so the first poll
+        // does not replay history (logs already in the chain when the filter is installed).
+        const logs = await customDevRpcRequest("eth_getFilterLogs", [filterId]);
+
+        expect(logs.length).to.be.eq(1);
+        expect(logs[0].address).to.be.eq(contractAddress);
+        expect(logs[0].topics).to.be.deep.eq(receipt.logs[0].topics);
       },
     });
   },

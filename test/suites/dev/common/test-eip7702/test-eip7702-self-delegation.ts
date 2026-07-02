@@ -1,9 +1,8 @@
 import "@moonbeam-network/api-augment";
-import { beforeAll, describeSuite, expect, deployCreateCompiledContract } from "@moonwall/cli";
+import { beforeAll, deployCreateCompiledContract, describeSuite, expect } from "moonwall";
 import { encodeFunctionData, type Abi, parseEther } from "viem";
-import { sendRawTransaction } from "@moonwall/util";
 import { generatePrivateKey, privateKeyToAccount } from "viem/accounts";
-import { createViemTransaction } from "./helpers";
+import { createViemTransaction, sendRawTransaction } from "./helpers";
 import { getTransactionReceiptWithRetry } from "../../../../helpers/eth-transactions";
 
 describeSuite({

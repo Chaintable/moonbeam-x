@@ -7,15 +7,20 @@ license = "GPL-3.0-only"
 name = "moonbeam-runtime-common"
 version = "0.8.0-dev"
 
+[package.metadata.cargo-udeps.ignore]
+# Used inside macro-generated code in apis.rs (impl_runtime_apis!)
+normal = ["pallet-author-slot-filter"]
+
 [dependencies]
 log = { workspace = true }
 
 # Moonbeam
 ethereum = { workspace = true }
 moonbeam-core-primitives = { workspace = true }
+moonbeam-runtime-api-primitives = { workspace = true }
 pallet-migrations = { workspace = true }
-pallet-parachain-staking = { workspace = true }
 pallet-moonbeam-foreign-assets = { workspace = true }
+pallet-xcm-transactor = { workspace = true }
 pallet-xcm-weight-trader = { workspace = true }
 
 # Substrate
@@ -34,6 +39,7 @@ sp-io = { workspace = true }
 
 # Moonkit
 pallet-author-inherent = { workspace = true }
+pallet-author-slot-filter = { workspace = true }
 
 # Polkadot
 xcm = { workspace = true }
@@ -54,11 +60,13 @@ std = [
 	"frame-support/std",
 	"frame-system/std",
 	"moonbeam-core-primitives/std",
+	"moonbeam-runtime-api-primitives/std",
 	"pallet-xcm-bridge/std",
 	"pallet-moonbeam-foreign-assets/std",
 	"pallet-author-inherent/std",
+	"pallet-author-slot-filter/std",
 	"pallet-migrations/std",
-	"pallet-parachain-staking/std",
+	"pallet-xcm-transactor/std",
 	"pallet-xcm-weight-trader/std",
 	"pallet-message-queue/std",
 	"pallet-balances/std",
@@ -74,18 +82,44 @@ std = [
 	"xcm/std",
 	"account/std",
 	"pallet-xcm-bridge/std",
-	"pallet-identity/std"
+	"pallet-identity/std",
+	"xcm-builder/std",
+	"log/std"
 ]
 runtime-benchmarks = [
 	"cumulus-primitives-core/runtime-benchmarks",
 	"pallet-message-queue/runtime-benchmarks",
 	"pallet-author-inherent/runtime-benchmarks",
+	"pallet-author-slot-filter/runtime-benchmarks",
 	"pallet-balances/runtime-benchmarks",
 	"pallet-identity/runtime-benchmarks",
 	"pallet-treasury/runtime-benchmarks",
 	"pallet-xcm/runtime-benchmarks",
+	"frame-support/runtime-benchmarks",
+	"frame-system/runtime-benchmarks",
+	"pallet-migrations/runtime-benchmarks",
+	"pallet-xcm-bridge/runtime-benchmarks",
+	"pallet-xcm-transactor/runtime-benchmarks",
+	"sp-runtime/runtime-benchmarks",
+	"xcm-builder/runtime-benchmarks",
+	"xcm/runtime-benchmarks",
+	"pallet-moonbeam-foreign-assets/runtime-benchmarks",
+	"pallet-xcm-weight-trader/runtime-benchmarks"
 ]
 try-runtime = [
 	"frame-support/try-runtime",
 	"pallet-migrations/try-runtime",
+	"pallet-author-inherent/try-runtime",
+	"pallet-author-slot-filter/try-runtime",
+	"frame-system/try-runtime",
+	"pallet-balances/try-runtime",
+	"pallet-identity?/try-runtime",
+	"pallet-message-queue/try-runtime",
+	"pallet-treasury/try-runtime",
+	"pallet-xcm-bridge/try-runtime",
+	"pallet-xcm-transactor/try-runtime",
+	"pallet-xcm/try-runtime",
+	"sp-runtime/try-runtime",
+	"pallet-moonbeam-foreign-assets/try-runtime",
+	"pallet-xcm-weight-trader/try-runtime"
 ]

@@ -1,5 +1,4 @@
 import "@moonbeam-network/api-augment";
-import { beforeAll, describeSuite, expect, fetchCompiledContract } from "@moonwall/cli";
 import {
   BALTATHAR_ADDRESS,
   CHARLETH_ADDRESS,
@@ -7,7 +6,11 @@ import {
   DOROTHY_ADDRESS,
   GLMR,
   MILLIGLMR,
-} from "@moonwall/util";
+  beforeAll,
+  describeSuite,
+  expect,
+  fetchCompiledContract,
+} from "moonwall";
 import { type TransactionReceipt, decodeEventLog } from "viem";
 import { setupLotteryWithParticipants } from "../../../../helpers";
 
@@ -15,7 +18,7 @@ describeSuite({
   id: "D023015",
   title: "Randomness VRF - Fulfilling Lottery Demo",
   foundationMethods: "dev",
-  testCases: ({ context, it, log }) => {
+  testCases: ({ context, it }) => {
     let lotteryContract: `0x${string}`;
     let fulFillReceipt: TransactionReceipt;
     let dorothyBefore: bigint;
@@ -48,7 +51,7 @@ describeSuite({
         args: [0],
       });
 
-      expect(estimatedGas).to.be.equal(162997n);
+      expect(estimatedGas).to.be.equal(165855n);
 
       const rawTxn = await context.writePrecompile!({
         precompileName: "Randomness",
@@ -63,7 +66,7 @@ describeSuite({
         .viem()
         .getTransactionReceipt({ hash: result!.hash as `0x${string}` });
 
-      expect(fulFillReceipt.gasUsed).to.equal(91480n);
+      expect(fulFillReceipt.gasUsed).to.equal(91428n);
     });
     it({
       id: "T01",

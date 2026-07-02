@@ -22,6 +22,7 @@ use frame_support::traits::{
 	PalletInfo as PalletInfoTrait,
 };
 use frame_support::{construct_runtime, parameter_types, weights::Weight};
+use moonbeam_tests_primitives::MemoryFeeTrader;
 use pallet_evm::{EnsureAddressNever, EnsureAddressRoot, FrameSystemAccountProvider};
 use pallet_xcm_transactor::RelayIndices;
 use parity_scale_codec::{Decode, DecodeWithMemTracking, Encode};
@@ -173,6 +174,7 @@ impl pallet_evm::Config for Runtime {
 	type ChainId = ();
 	type OnChargeTransaction = ();
 	type BlockGasLimit = BlockGasLimit;
+	type TransactionGasLimit = ();
 	type BlockHashMapping = pallet_evm::SubstrateBlockHashMapping<Self>;
 	type FindAuthor = ();
 	type OnCreate = ();
@@ -370,6 +372,7 @@ impl pallet_xcm_transactor::Config for Runtime {
 	type HrmpManipulatorOrigin = frame_system::EnsureRoot<AccountId>;
 	type HrmpOpenOrigin = frame_system::EnsureRoot<AccountId>;
 	type MaxHrmpFee = ();
+	type FeeTrader = MemoryFeeTrader;
 }
 
 pub struct XcmConfig;

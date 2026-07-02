@@ -1,13 +1,34 @@
 // constants.ts -  Any common values here should be moved to moonwall if suitable
 
-import type { GenericContext } from "@moonwall/cli";
+import type { GenericContext } from "moonwall";
 import {
   ALITH_GENESIS_FREE_BALANCE,
   ALITH_GENESIS_LOCK_BALANCE,
   ALITH_GENESIS_RESERVE_BALANCE,
-} from "@moonwall/util";
+} from "moonwall";
 
 const KILOWEI = 1_000n;
+
+/// The default byte size of a transaction slot (32 KiB).
+///
+/// Reference:
+/// - geth: <https://github.com/ethereum/go-ethereum/blob/master/core/txpool/legacypool/legacypool.go> (`txSlotSize`)
+/// - reth: <https://github.com/paradigmxyz/reth/blob/main/crates/transaction-pool/src/validate/constants.rs#L4>
+export const TX_SLOT_BYTE_SIZE = 32 * 1024;
+
+/// The default maximum size a single transaction can have (128 KiB).
+/// This is the RLP-encoded size of the signed transaction.
+///
+/// Reference:
+/// - geth: <https://github.com/ethereum/go-ethereum/blob/master/core/txpool/legacypool/legacypool.go> (`txMaxSize`)
+/// - reth: <https://github.com/paradigmxyz/reth/blob/main/crates/transaction-pool/src/validate/constants.rs#L11>
+export const DEFAULT_MAX_TX_INPUT_BYTES = 4 * TX_SLOT_BYTE_SIZE;
+
+// EIP-7825: Maximum transaction gas limit cap (2^24)
+export const EIP_7825_MAX_TRANSACTION_GAS_LIMIT = 16_777_216n;
+
+// Moonbeam overrides the EIP-7825 default because it is too low for current block limits.
+export const TX_MAX_GAS_LIMIT = 35_000_000n;
 
 /**
  * Class allowing to store multiple value for a runtime constant based on the runtime version
@@ -103,8 +124,9 @@ export const RUNTIME_CONSTANTS = {
     // Maximum Gas to PoV ratio used in the gasometer
     GAS_PER_POV_BYTES: new RuntimeConstant({ 3600: 8n, 2900: 16n, 0: 4n }),
     // Maximum PoV size in bytes allowed by the gasometer for one ethereum transaction
-    // MAX_ETH_POV_PER_TX = EXTRINSIC_GAS_LIMIT / GAS_PER_POV_BYTES
-    MAX_ETH_POV_PER_TX: new RuntimeConstant({ 3600: 6_500_000n, 0: 3_250_000n }),
+    // With EIP-7825: MAX_ETH_POV_PER_TX = EIP_7825_MAX_TRANSACTION_GAS_LIMIT / GAS_PER_POV_BYTES
+    // = 16_777_216 / 8 = 2_097_152 bytes (~2MB)
+    MAX_ETH_POV_PER_TX: new RuntimeConstant({ 3800: 2_097_152n, 3600: 6_500_000n, 0: 3_250_000n }),
     // Storage read/write costs
     STORAGE_READ_COST: 59_217_000n,
     // Weight to gas conversion ratio
@@ -149,8 +171,9 @@ export const RUNTIME_CONSTANTS = {
     // Maximum Gas to PoV ratio used in the gasometer
     GAS_PER_POV_BYTES: new RuntimeConstant({ 3100: 16n, 3000: 8n, 0: 4n }),
     // Maximum PoV size in bytes allowed by the gasometer for one ethereum transaction
-    // MAX_ETH_POV_PER_TX = EXTRINSIC_GAS_LIMIT / GAS_PER_POV_BYTES
-    MAX_ETH_POV_PER_TX: new RuntimeConstant({ 3600: 6_500_000n, 0: 3_250_000n }),
+    // With EIP-7825: MAX_ETH_POV_PER_TX = EIP_7825_MAX_TRANSACTION_GAS_LIMIT / GAS_PER_POV_BYTES
+    // = 16_777_216 / 8 = 2_097_152 bytes (~2MB)
+    MAX_ETH_POV_PER_TX: new RuntimeConstant({ 3800: 2_097_152n, 3600: 6_500_000n, 0: 3_250_000n }),
     // Storage read/write costs
     STORAGE_READ_COST: 59_217_000n,
     // Weight to gas conversion ratio
@@ -195,8 +218,9 @@ export const RUNTIME_CONSTANTS = {
     // Maximum Gas to PoV ratio used in the gasometer
     GAS_PER_POV_BYTES: new RuntimeConstant({ 3200: 16n, 3100: 8n, 0: 4n }),
     // Maximum PoV size in bytes allowed by the gasometer for one ethereum transaction
-    // MAX_ETH_POV_PER_TX = EXTRINSIC_GAS_LIMIT / GAS_PER_POV_BYTES
-    MAX_ETH_POV_PER_TX: new RuntimeConstant({ 3700: 6_500_000n, 0: 3_250_000n }),
+    // With EIP-7825: MAX_ETH_POV_PER_TX = EIP_7825_MAX_TRANSACTION_GAS_LIMIT / GAS_PER_POV_BYTES
+    // = 16_777_216 / 8 = 2_097_152 bytes (~2MB)
+    MAX_ETH_POV_PER_TX: new RuntimeConstant({ 3800: 2_097_152n, 3700: 6_500_000n, 0: 3_250_000n }),
     // Storage read/write costs
     STORAGE_READ_COST: 59_217_000n,
     // Weight to gas conversion ratio

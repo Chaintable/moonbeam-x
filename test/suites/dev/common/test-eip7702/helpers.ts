@@ -1,6 +1,6 @@
-import type { DevModeContext, GenericContext } from "@moonwall/cli";
-import type { TransactionSerializable } from "viem";
-import { ALITH_PRIVATE_KEY } from "@moonwall/util";
+import type { DevModeContext, GenericContext } from "moonwall";
+import { keccak256, type TransactionSerializable } from "viem";
+import { ALITH_PRIVATE_KEY } from "moonwall";
 import { generatePrivateKey, privateKeyToAccount } from "viem/accounts";
 import { fundAccount } from "../../../../helpers";
 
@@ -13,6 +13,52 @@ export async function createFundedAccount(context: DevModeContext) {
     account: account,
     privateKey: privateKey,
   };
+}
+
+const isAlreadyKnownError = (error: unknown): boolean => {
+  const maybeError = error as { details?: string; message?: string; shortMessage?: string };
+  return [maybeError.details, maybeError.message, maybeError.shortMessage].some((message) =>
+    message?.includes("already known")
+  );
+};
+
+const isRetriableRawTransactionError = (error: unknown): boolean => {
+  const maybeError = error as { details?: string; message?: string; shortMessage?: string };
+  return [maybeError.details, maybeError.message, maybeError.shortMessage].some((message) =>
+    /timeout|timed out|ECONNRESET|ECONNREFUSED|fetch failed|network/i.test(message ?? "")
+  );
+};
+
+export async function sendRawTransaction(
+  context: GenericContext,
+  serializedTransaction: `0x${string}`,
+  options?: {
+    maxAttempts?: number;
+    delayMs?: number;
+  }
+): Promise<`0x${string}`> {
+  const maxAttempts = options?.maxAttempts ?? 4;
+  const delayMs = options?.delayMs ?? 250;
+  const txHash = keccak256(serializedTransaction);
+
+  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+    try {
+      return await context.viem().sendRawTransaction({ serializedTransaction });
+    } catch (error) {
+      if (isAlreadyKnownError(error)) {
+        return txHash;
+      }
+
+      if (attempt < maxAttempts && isRetriableRawTransactionError(error)) {
+        await new Promise((resolve) => setTimeout(resolve, delayMs * attempt));
+        continue;
+      }
+
+      throw error;
+    }
+  }
+
+  return txHash;
 }
 
 // TODO temporary helper until the changes are merged upstream to Moonwall
@@ -28,6 +74,7 @@ export async function createViemTransaction(
   const chainId = await context.viem().getChainId();
   const txnCount = await context.viem().getTransactionCount({ address: account.address });
   const gasPrice = await context.viem().getGasPrice();
+  const maxFeePerGas = gasPrice * 2n;
   const data = options?.data ? options.data : "0x";
 
   let estimatedGas = 1_500_000n;
@@ -48,7 +95,7 @@ export async function createViemTransaction(
       ? ({
           to,
           value,
-          maxFeePerGas: options.maxFeePerGas !== undefined ? options.maxFeePerGas : gasPrice,
+          maxFeePerGas: options.maxFeePerGas !== undefined ? options.maxFeePerGas : maxFeePerGas,
           maxPriorityFeePerGas:
             options.maxPriorityFeePerGas !== undefined ? options.maxPriorityFeePerGas : gasPrice,
           gas: options.gas !== undefined ? options.gas : estimatedGas,
@@ -81,7 +128,8 @@ export async function createViemTransaction(
             ? ({
                 to,
                 value,
-                maxFeePerGas: options.maxFeePerGas !== undefined ? options.maxFeePerGas : gasPrice,
+                maxFeePerGas:
+                  options.maxFeePerGas !== undefined ? options.maxFeePerGas : maxFeePerGas,
                 maxPriorityFeePerGas:
                   options.maxPriorityFeePerGas !== undefined
                     ? options.maxPriorityFeePerGas

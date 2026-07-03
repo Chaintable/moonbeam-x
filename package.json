@@ -19,27 +19,8 @@
   "devDependencies": {
     "@biomejs/biome": "2.2.5"
   },
-  "pnpm": {
-    "onlyBuiltDependencies": [
-      "@parcel/watcher",
-      "bufferutil",
-      "cpu-features",
-      "es5-ext",
-      "esbuild",
-      "keccak",
-      "msgpackr-extract",
-      "protobufjs",
-      "secp256k1",
-      "sqlite3",
-      "ssh2",
-      "utf-8-validate",
-      "web3",
-      "web3-bzz",
-      "web3-shh"
-    ]
-  },
+  "pnpm": {},
   "keywords": [],
   "author": "",
-  "license": "ISC",
-  "packageManager": "pnpm@10.24.0+sha512.01ff8ae71b4419903b65c60fb2dc9d34cf8bb6e06d03bde112ef38f7a34d6904c424ba66bea5cdcf12890230bf39f9580473140ed9c946fef328b6e5238a345a"
+  "license": "ISC"
 }

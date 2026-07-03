@@ -295,9 +295,9 @@ declare module "@polkadot/api-base/types/errors" {
        **/
       FeeOverflow: AugmentedError<ApiType>;
       /**
-       * Gas limit is too high.
+       * Gas limit exceeds block gas limit.
        **/
-      GasLimitTooHigh: AugmentedError<ApiType>;
+      GasLimitExceedsBlockLimit: AugmentedError<ApiType>;
       /**
        * Gas limit is too low.
        **/
@@ -327,6 +327,10 @@ declare module "@polkadot/api-base/types/errors" {
        **/
       Reentrancy: AugmentedError<ApiType>;
       /**
+       * EIP-7825: Transaction gas limit exceeds protocol cap (2^24).
+       **/
+      TransactionGasLimitExceedsCap: AugmentedError<ApiType>;
+      /**
        * EIP-3607,
        **/
       TransactionMustComeFromEOA: AugmentedError<ApiType>;
@@ -348,6 +352,7 @@ declare module "@polkadot/api-base/types/errors" {
       AssetAlreadyFrozen: AugmentedError<ApiType>;
       AssetDoesNotExist: AugmentedError<ApiType>;
       AssetIdFiltered: AugmentedError<ApiType>;
+      AssetNotActive: AugmentedError<ApiType>;
       AssetNotFrozen: AugmentedError<ApiType>;
       AssetNotInSiblingPara: AugmentedError<ApiType>;
       CannotConvertLocationToAccount: AugmentedError<ApiType>;
@@ -366,6 +371,7 @@ declare module "@polkadot/api-base/types/errors" {
       InvalidTokenName: AugmentedError<ApiType>;
       LocationAlreadyExists: AugmentedError<ApiType>;
       LocationOutsideOfOrigin: AugmentedError<ApiType>;
+      NoPendingDeposit: AugmentedError<ApiType>;
       TooManyForeignAssets: AugmentedError<ApiType>;
       /**
        * Generic error
@@ -1376,7 +1382,6 @@ declare module "@polkadot/api-base/types/errors" {
       ErrorDelivering: AugmentedError<ApiType>;
       ErrorValidating: AugmentedError<ApiType>;
       FailedMultiLocationToJunction: AugmentedError<ApiType>;
-      FeePerSecondNotSet: AugmentedError<ApiType>;
       HrmpHandlerNotImplemented: AugmentedError<ApiType>;
       IndexAlreadyClaimed: AugmentedError<ApiType>;
       InvalidDest: AugmentedError<ApiType>;

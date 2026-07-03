@@ -1,5 +1,6 @@
 import "@moonbeam-network/api-augment";
-import { type DevModeContext, expect } from "@moonwall/cli";
+import type { DevModeContext } from "moonwall";
+import { expect } from "moonwall";
 import type { EventRecord } from "@polkadot/types/interfaces";
 import type {
   EvmCoreErrorExitError,
@@ -121,6 +122,49 @@ export async function getTransactionReceiptWithRetry(
 
   // If we've exhausted all attempts, throw the last error
   throw lastError || new Error(`Failed to get transaction receipt after ${maxAttempts} attempts`);
+}
+
+export async function getBlockWithRetry(
+  context: DevModeContext,
+  options?: {
+    blockHash?: `0x${string}`;
+    blockNumber?: bigint;
+    maxAttempts?: number;
+    delayMs?: number;
+  }
+) {
+  const maxAttempts = options?.maxAttempts ?? 4;
+  const delayMs = options?.delayMs ?? 100;
+
+  let lastError: Error | undefined;
+
+  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+    try {
+      if (options?.blockHash) {
+        return await context.viem().getBlock({ blockHash: options.blockHash });
+      } else if (options?.blockNumber !== undefined) {
+        return await context.viem().getBlock({ blockNumber: options.blockNumber });
+      } else {
+        return await context.viem().getBlock();
+      }
+    } catch (error: any) {
+      lastError = error;
+
+      if (
+        error.name === "BlockNotFoundError" ||
+        error.message?.includes("Block could not be found")
+      ) {
+        if (attempt < maxAttempts) {
+          await new Promise((resolve) => setTimeout(resolve, delayMs));
+          continue;
+        }
+      }
+
+      throw error;
+    }
+  }
+
+  throw lastError || new Error(`Failed to get block after ${maxAttempts} attempts`);
 }
 
 export async function getTransactionFees(context: DevModeContext, hash: string): Promise<bigint> {

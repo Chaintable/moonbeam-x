@@ -1,6 +1,5 @@
 import "@moonbeam-network/api-augment";
-import { beforeAll, describeSuite, expect } from "@moonwall/cli";
-import { ALITH_ADDRESS, ALITH_PRIVATE_KEY } from "@moonwall/util";
+import { ALITH_ADDRESS, ALITH_PRIVATE_KEY, beforeAll, describeSuite, expect } from "moonwall";
 import { fromBytes } from "viem";
 import {
   verifyLatestBlockFees,
@@ -16,7 +15,7 @@ describeSuite({
   id: "D022768",
   title: "Precompiles - xcm transactor V3",
   foundationMethods: "dev",
-  testCases: ({ context, it, log }) => {
+  testCases: ({ context, it }) => {
     beforeAll(async () => {
       await registerXcmTransactorDerivativeIndex(context);
       expect(
@@ -85,7 +84,8 @@ describeSuite({
             overallWeight,
             refund,
           ],
-          gas: 500_000n,
+          // Increase EVM gas limit to account for higher runtime/XCM costs
+          gas: 2_000_000n,
           rawTxOnly: true,
           privateKey: ALITH_PRIVATE_KEY,
         });

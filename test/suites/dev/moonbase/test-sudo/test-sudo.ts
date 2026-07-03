@@ -1,13 +1,15 @@
 import "@moonbeam-network/api-augment";
-import { describeSuite, expect } from "@moonwall/cli";
 import {
   ALITH_ADDRESS,
+  CHARLETH_ADDRESS,
   DEFAULT_GENESIS_BALANCE,
+  ETHAN_ADDRESS,
   baltathar,
+  describeSuite,
+  expect,
   generateKeyringPair,
-} from "@moonwall/util";
+} from "moonwall";
 import { ALITH_GENESIS_TRANSFERABLE_BALANCE, verifyLatestBlockFees } from "../../../../helpers";
-import { CHARLETH_ADDRESS, ETHAN_ADDRESS } from "@moonwall/util";
 
 describeSuite({
   id: "D023601",
@@ -65,7 +67,6 @@ describeSuite({
       id: "T03",
       title: "should NOT be able to call sudo with another account than sudo account",
       test: async function () {
-        const baltathar_before = await context.polkadotJs().query.system.account(CHARLETH_ADDRESS);
         const { result } = await context.createBlock(
           context
             .polkadotJs()
@@ -78,11 +79,11 @@ describeSuite({
         const account = await context.polkadotJs().query.system.account(CHARLETH_ADDRESS);
         expect(account.data.free.toBigInt()).toBe(DEFAULT_GENESIS_BALANCE);
 
-        expect(result!.events.length === 6).to.be.true;
-        expect(context.polkadotJs().events.system.NewAccount.is(result!.events[1].event)).to.be
+        expect(result!.events.length).to.equal(7);
+        expect(context.polkadotJs().events.system.NewAccount.is(result!.events[2].event)).to.be
           .true;
-        expect(context.polkadotJs().events.balances.Endowed.is(result!.events[2].event)).to.be.true;
-        expect(context.polkadotJs().events.system.ExtrinsicFailed.is(result!.events[5].event)).to.be
+        expect(context.polkadotJs().events.balances.Endowed.is(result!.events[3].event)).to.be.true;
+        expect(context.polkadotJs().events.system.ExtrinsicFailed.is(result!.events[6].event)).to.be
           .true;
       },
     });

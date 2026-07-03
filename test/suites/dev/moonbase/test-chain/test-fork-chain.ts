@@ -1,13 +1,13 @@
 import "@moonbeam-network/api-augment";
-import { beforeEach, describeSuite, expect, TransactionTypes } from "@moonwall/cli";
-import { createRawTransfer } from "@moonwall/util";
+import { TransactionTypes, beforeEach, createRawTransfer, describeSuite, expect } from "moonwall";
 import { generatePrivateKey, privateKeyToAccount } from "viem/accounts";
+import { getBlockWithRetry } from "../../../../helpers/eth-transactions";
 
 describeSuite({
   id: "D020401",
   title: "Chain - Fork",
   foundationMethods: "dev",
-  testCases: ({ context, it, log }) => {
+  testCases: ({ context, it }) => {
     let randomAddress: `0x${string}`;
 
     beforeEach(async function () {
@@ -46,7 +46,7 @@ describeSuite({
           (await context.viem().getBlock({ blockNumber: 2n })).hash,
           "Ethereum blocks should have changed"
         ).to.not.equal(ethHash2);
-        expect((await context.viem().getBlock()).number).toBe(currentHeight + 1n);
+        expect((await getBlockWithRetry(context)).number).toBe(currentHeight + 1n);
       },
     });
 

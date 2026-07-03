@@ -21,6 +21,7 @@ use crate::{
 		RuntimeEvent, RuntimeOrigin,
 	},
 };
+use fp_evm::MAX_TRANSACTION_GAS_LIMIT;
 use frame_support::assert_ok;
 use pallet_evm::Call as EvmCall;
 use pallet_proxy::{
@@ -546,8 +547,8 @@ fn test_nested_evm_bypass_proxy_should_allow_elevating_proxy_type() {
 				target: Precompile1.into(),
 				input: add_proxy_precompile,
 				value: U256::zero(),
-				gas_limit: u64::max_value(),
-				max_fee_per_gas: 0.into(),
+				gas_limit: MAX_TRANSACTION_GAS_LIMIT.low_u64(),
+				max_fee_per_gas: U256::zero(),
 				max_priority_fee_per_gas: Some(U256::zero()),
 				nonce: None,
 				access_list: Vec::new(),
@@ -608,12 +609,6 @@ fn succeed_if_called_by_precompile() {
 		.with_balances(vec![(Alice.into(), 1000), (Bob.into(), 1000)])
 		.build()
 		.execute_with(|| {
-			// Set dummy code to Alice address as it if was a precompile.
-			pallet_evm::AccountCodes::<Runtime>::insert(
-				H160::from(Alice),
-				vec![0x60, 0x00, 0x60, 0x00, 0xfd],
-			);
-
 			PrecompilesValue::get()
 				.prepare_test(
 					Alice,

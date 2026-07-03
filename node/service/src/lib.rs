@@ -24,18 +24,18 @@
 
 pub mod rpc;
 
+use async_trait::async_trait;
 use cumulus_client_cli::CollatorOptions;
 use cumulus_client_collator::service::CollatorService;
 use cumulus_client_consensus_common::ParachainBlockImport as TParachainBlockImport;
-use cumulus_client_consensus_proposer::Proposer;
 use cumulus_client_parachain_inherent::{MockValidationDataInherentDataProvider, MockXcmConfig};
 use cumulus_client_service::{
 	prepare_node_config, start_relay_chain_tasks, CollatorSybilResistance, DARecoveryProfile,
-	ParachainHostFunctions, StartRelayChainTasksParams,
+	ParachainHostFunctions, ParachainTracingExecuteBlock, StartRelayChainTasksParams,
 };
 use cumulus_primitives_core::{
 	relay_chain::{self, well_known_keys, CollatorPair},
-	CollectCollationInfo, ParaId,
+	CollectCollationInfo, ParaId, RelayParentOffsetApi,
 };
 use cumulus_relay_chain_inprocess_interface::build_inprocess_relay_chain;
 use cumulus_relay_chain_interface::{OverseerHandle, RelayChainInterface, RelayChainResult};
@@ -53,6 +53,7 @@ use moonbeam_cli_opt::{
 };
 #[cfg(feature = "moonbeam-native")]
 pub use moonbeam_runtime;
+use moonbeam_runtime_api_primitives::AuthoringRuntimeApi;
 use moonbeam_vrf::VrfDigestsProvider;
 #[cfg(feature = "moonriver-native")]
 pub use moonriver_runtime;
@@ -68,16 +69,19 @@ use sc_client_api::{
 };
 use sc_consensus::{BlockImport, ImportQueue};
 use sc_executor::{HeapAllocStrategy, WasmExecutor, DEFAULT_HEAP_ALLOC_STRATEGY};
-use sc_network::{config::FullNetworkConfiguration, NetworkBackend, NetworkBlock};
+use sc_network::{config::FullNetworkConfiguration, NetworkBackend, NetworkBlock, PeerId};
 use sc_service::config::PrometheusConfig;
 use sc_service::{
 	error::Error as ServiceError, ChainSpec, Configuration, PartialComponents, TFullBackend,
 	TFullClient, TaskManager,
 };
 use sc_telemetry::{Telemetry, TelemetryHandle, TelemetryWorker, TelemetryWorkerHandle};
-use sc_transaction_pool_api::{OffchainTransactionPoolFactory, TransactionPool};
+use sc_transaction_pool_api::{
+	ImportNotificationStream, OffchainTransactionPoolFactory, ReadyTransactions, TransactionFor,
+	TransactionPool, TransactionSource, TransactionStatusStreamFor, TxHash, TxInvalidityReportMap,
+};
 use session_keys_primitives::VrfApi;
-use sp_api::{ConstructRuntimeApi, ProvideRuntimeApi};
+use sp_api::{ApiExt, ConstructRuntimeApi, ProvideRuntimeApi};
 use sp_blockchain::{Error as BlockChainError, HeaderBackend, HeaderMetadata};
 use sp_consensus::SyncOracle;
 use sp_core::{ByteArray, Encode, H256};
@@ -85,7 +89,13 @@ use sp_keystore::{Keystore, KeystorePtr};
 use std::str::FromStr;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
-use std::{collections::BTreeMap, path::Path, sync::Mutex, time::Duration};
+use std::{
+	collections::{BTreeMap, HashMap},
+	path::Path,
+	pin::Pin,
+	sync::Mutex,
+	time::Duration,
+};
 use substrate_prometheus_endpoint::Registry;
 
 pub use client::*;
@@ -119,6 +129,159 @@ type PartialComponentsResult<Client, Backend> = Result<
 >;
 
 const RELAY_CHAIN_SLOT_DURATION_MILLIS: u64 = 6_000;
+
+struct LimitedTransactionPool<C, P> {
+	client: Arc<C>,
+	inner: Arc<P>,
+}
+
+fn limited_transaction_pool<C, P>(
+	client: Arc<C>,
+	inner: Arc<P>,
+) -> Arc<LimitedTransactionPool<C, P>> {
+	Arc::new(LimitedTransactionPool { client, inner })
+}
+
+impl<C, P> LimitedTransactionPool<C, P>
+where
+	C: ProvideRuntimeApi<Block>,
+	C::Api: moonbeam_runtime_api_primitives::AuthoringRuntimeApi<Block> + sp_api::ApiExt<Block>,
+{
+	fn max_transactions_per_block(&self, at: Hash) -> u32 {
+		let api = self.client.runtime_api();
+		match api.api_version::<dyn moonbeam_runtime_api_primitives::AuthoringRuntimeApi<Block>>(at)
+		{
+			Ok(Some(_)) => api
+				.max_transactions_per_block(at)
+				.unwrap_or(moonbeam_runtime_api_primitives::DEFAULT_MAX_TRANSACTIONS_PER_BLOCK),
+			_ => moonbeam_runtime_api_primitives::DEFAULT_MAX_TRANSACTIONS_PER_BLOCK,
+		}
+	}
+}
+
+struct LimitedReadyTransactions<T> {
+	inner: Box<dyn ReadyTransactions<Item = T> + Send>,
+	remaining: usize,
+}
+
+impl<T> Iterator for LimitedReadyTransactions<T> {
+	type Item = T;
+
+	fn next(&mut self) -> Option<Self::Item> {
+		if self.remaining == 0 {
+			return None;
+		}
+		let item = self.inner.next();
+		if item.is_some() {
+			self.remaining -= 1;
+		}
+		item
+	}
+}
+
+impl<T> ReadyTransactions for LimitedReadyTransactions<T> {
+	fn report_invalid(&mut self, tx: &Self::Item) {
+		self.inner.report_invalid(tx)
+	}
+}
+
+#[async_trait]
+impl<C, P> TransactionPool for LimitedTransactionPool<C, P>
+where
+	C: ProvideRuntimeApi<Block> + Send + Sync,
+	C::Api: moonbeam_runtime_api_primitives::AuthoringRuntimeApi<Block> + sp_api::ApiExt<Block>,
+	P: TransactionPool<Block = Block>,
+	P::InPoolTransaction: 'static,
+{
+	type Block = P::Block;
+	type Error = P::Error;
+	type Hash = P::Hash;
+	type InPoolTransaction = P::InPoolTransaction;
+
+	async fn submit_at(
+		&self,
+		at: Hash,
+		source: TransactionSource,
+		xts: Vec<TransactionFor<Self>>,
+	) -> Result<Vec<Result<TxHash<Self>, Self::Error>>, Self::Error> {
+		self.inner.submit_at(at, source, xts).await
+	}
+
+	async fn submit_one(
+		&self,
+		at: Hash,
+		source: TransactionSource,
+		xt: TransactionFor<Self>,
+	) -> Result<TxHash<Self>, Self::Error> {
+		self.inner.submit_one(at, source, xt).await
+	}
+
+	async fn submit_and_watch(
+		&self,
+		at: Hash,
+		source: TransactionSource,
+		xt: TransactionFor<Self>,
+	) -> Result<Pin<Box<TransactionStatusStreamFor<Self>>>, Self::Error> {
+		self.inner.submit_and_watch(at, source, xt).await
+	}
+
+	async fn ready_at(
+		&self,
+		at: Hash,
+	) -> Box<dyn ReadyTransactions<Item = Arc<Self::InPoolTransaction>> + Send> {
+		Box::new(LimitedReadyTransactions {
+			inner: self.inner.ready_at(at).await,
+			remaining: self.max_transactions_per_block(at) as usize,
+		})
+	}
+
+	fn ready(&self) -> Box<dyn ReadyTransactions<Item = Arc<Self::InPoolTransaction>> + Send> {
+		self.inner.ready()
+	}
+
+	async fn report_invalid(
+		&self,
+		at: Option<Hash>,
+		invalid_tx_errors: TxInvalidityReportMap<TxHash<Self>>,
+	) -> Vec<Arc<Self::InPoolTransaction>> {
+		self.inner.report_invalid(at, invalid_tx_errors).await
+	}
+
+	fn futures(&self) -> Vec<Self::InPoolTransaction> {
+		self.inner.futures()
+	}
+
+	fn status(&self) -> sc_transaction_pool_api::PoolStatus {
+		self.inner.status()
+	}
+
+	fn import_notification_stream(&self) -> ImportNotificationStream<TxHash<Self>> {
+		self.inner.import_notification_stream()
+	}
+
+	fn on_broadcasted(&self, propagations: HashMap<TxHash<Self>, Vec<String>>) {
+		self.inner.on_broadcasted(propagations)
+	}
+
+	fn hash_of(&self, xt: &TransactionFor<Self>) -> TxHash<Self> {
+		self.inner.hash_of(xt)
+	}
+
+	fn ready_transaction(&self, hash: &TxHash<Self>) -> Option<Arc<Self::InPoolTransaction>> {
+		self.inner.ready_transaction(hash)
+	}
+
+	async fn ready_at_with_timeout(
+		&self,
+		at: Hash,
+		timeout: Duration,
+	) -> Box<dyn ReadyTransactions<Item = Arc<Self::InPoolTransaction>> + Send> {
+		Box::new(LimitedReadyTransactions {
+			inner: self.inner.ready_at_with_timeout(at, timeout).await,
+			remaining: self.max_transactions_per_block(at) as usize,
+		})
+	}
+}
 
 static TIMESTAMP: AtomicU64 = AtomicU64::new(0);
 
@@ -726,9 +889,8 @@ async fn start_node_impl<RuntimeApi, Customizations, Net>(
 ) -> sc_service::error::Result<(TaskManager, Arc<FullClient<RuntimeApi>>)>
 where
 	RuntimeApi: ConstructRuntimeApi<Block, FullClient<RuntimeApi>> + Send + Sync + 'static,
-	RuntimeApi::RuntimeApi: RuntimeApiCollection
-		+ cumulus_primitives_core::GetCoreSelectorApi<Block>
-		+ cumulus_primitives_core::RelayParentOffsetApi<Block>,
+	RuntimeApi::RuntimeApi:
+		RuntimeApiCollection + cumulus_primitives_core::RelayParentOffsetApi<Block>,
 	Customizations: ClientCustomizations + 'static,
 	Net: NetworkBackend<Block, Hash>,
 {
@@ -817,6 +979,7 @@ where
 			overrides: overrides.clone(),
 			fee_history_limit,
 			fee_history_cache: fee_history_cache.clone(),
+			state_pruning: parachain_config.state_pruning.clone(),
 		},
 		sync_service.clone(),
 		pubsub_notification_sinks.clone(),
@@ -837,6 +1000,7 @@ where
 					overrides: overrides.clone(),
 					fee_history_limit,
 					fee_history_cache: fee_history_cache.clone(),
+					state_pruning: parachain_config.state_pruning.clone(),
 				},
 			)
 		} else {
@@ -961,6 +1125,7 @@ where
 		system_rpc_tx,
 		tx_handler_controller,
 		telemetry: telemetry.as_mut(),
+		tracing_execute_block: Some(Arc::new(ParachainTracingExecuteBlock::new(client.clone()))),
 	})?;
 
 	if let Some(hwbench) = hwbench {
@@ -1023,6 +1188,7 @@ where
 			params.keystore_container.keystore(),
 			para_id,
 			collator_key.expect("Command line arguments do not allow this. qed"),
+			network.local_peer_id(),
 			overseer_handle,
 			announce_block,
 			force_authoring,
@@ -1050,6 +1216,7 @@ fn start_consensus<RuntimeApi, SO>(
 	keystore: KeystorePtr,
 	para_id: ParaId,
 	collator_key: CollatorPair,
+	collator_peer_id: PeerId,
 	overseer_handle: OverseerHandle,
 	announce_block: Arc<dyn Fn(Hash, Option<Vec<u8>>) + Send + Sync>,
 	force_authoring: bool,
@@ -1060,21 +1227,19 @@ fn start_consensus<RuntimeApi, SO>(
 ) -> Result<(), sc_service::Error>
 where
 	RuntimeApi: ConstructRuntimeApi<Block, FullClient<RuntimeApi>> + Send + Sync + 'static,
-	RuntimeApi::RuntimeApi: RuntimeApiCollection
-		+ cumulus_primitives_core::GetCoreSelectorApi<Block>
-		+ cumulus_primitives_core::RelayParentOffsetApi<Block>,
+	RuntimeApi::RuntimeApi:
+		RuntimeApiCollection + cumulus_primitives_core::RelayParentOffsetApi<Block>,
 	sc_client_api::StateBackendFor<FullBackend, Block>: sc_client_api::StateBackend<BlakeTwo256>,
 	SO: SyncOracle + Send + Sync + Clone + 'static,
 {
-	let proposer_factory = sc_basic_authorship::ProposerFactory::with_proof_recording(
+	let proposer = sc_basic_authorship::ProposerFactory::with_proof_recording(
 		task_manager.spawn_handle(),
 		client.clone(),
-		transaction_pool,
+		limited_transaction_pool(client.clone(), transaction_pool),
 		prometheus_registry,
 		telemetry.clone(),
 	);
 
-	let proposer = Proposer::new(proposer_factory);
 	let collator_service = CollatorService::new(
 		client.clone(),
 		Arc::new(task_manager.spawn_handle()),
@@ -1133,11 +1298,14 @@ where
 
 			let params = nimbus_consensus::collators::lookahead::Params {
 				additional_digests_provider: maybe_provide_vrf_digest,
-				additional_relay_keys: vec![relay_chain::well_known_keys::EPOCH_INDEX.to_vec()],
+				additional_relay_state_keys: vec![
+					relay_chain::well_known_keys::EPOCH_INDEX.to_vec()
+				],
 				authoring_duration: block_authoring_duration,
 				block_import,
 				code_hash_provider,
 				collator_key,
+				collator_peer_id,
 				collator_service,
 				create_inherent_data_providers,
 				force_authoring,
@@ -1202,6 +1370,7 @@ where
 				block_import,
 				code_hash_provider,
 				collator_key,
+				collator_peer_id,
 				collator_service,
 				create_inherent_data_providers: move |b, a| async move {
 					create_inherent_data_providers(b, a).await
@@ -1250,8 +1419,7 @@ where
 	RuntimeApi:
 		ConstructRuntimeApi<Block, FullClient<RuntimeApi>> + Send + Sync + 'static,
 	RuntimeApi::RuntimeApi:
-		RuntimeApiCollection + cumulus_primitives_core::GetCoreSelectorApi<Block>
-		+ cumulus_primitives_core::RelayParentOffsetApi<Block>,
+		RuntimeApiCollection + cumulus_primitives_core::RelayParentOffsetApi<Block>,
 	Customizations: ClientCustomizations + 'static,
 {
 	match parachain_config.network.network_backend {
@@ -1293,7 +1461,8 @@ pub async fn new_dev<RuntimeApi, Customizations, Net>(
 ) -> Result<TaskManager, ServiceError>
 where
 	RuntimeApi: ConstructRuntimeApi<Block, FullClient<RuntimeApi>> + Send + Sync + 'static,
-	RuntimeApi::RuntimeApi: RuntimeApiCollection,
+	RuntimeApi::RuntimeApi:
+		RuntimeApiCollection + cumulus_primitives_core::RelayParentOffsetApi<Block>,
 	Customizations: ClientCustomizations + 'static,
 	Net: NetworkBackend<Block, Hash>,
 {
@@ -1386,7 +1555,7 @@ where
 		let mut env = sc_basic_authorship::ProposerFactory::with_proof_recording(
 			task_manager.spawn_handle(),
 			client.clone(),
-			transaction_pool.clone(),
+			limited_transaction_pool(client.clone(), transaction_pool.clone()),
 			prometheus_registry.as_ref(),
 			telemetry.as_ref().map(|x| x.handle()),
 		);
@@ -1544,6 +1713,9 @@ where
 							}
 						};
 
+						let relay_parent_offset =
+							client_for_xcm.runtime_api().relay_parent_offset(block)?;
+
 						let mocked_parachain = MockValidationDataInherentDataProvider {
 							current_para_block,
 							para_id: parachain_id,
@@ -1555,7 +1727,8 @@ where
 								UpgradeGoAhead::GoAhead
 							}),
 							current_para_block_head,
-							relay_offset: additional_relay_offset.load(Ordering::SeqCst),
+							relay_offset: relay_parent_offset
+								.saturating_add(additional_relay_offset.load(Ordering::SeqCst)),
 							relay_blocks_per_para_block: 1,
 							para_blocks_per_relay_epoch: 10,
 							relay_randomness_config: (),
@@ -1603,6 +1776,7 @@ where
 			overrides: overrides.clone(),
 			fee_history_limit,
 			fee_history_cache: fee_history_cache.clone(),
+			state_pruning: config.state_pruning.clone(),
 		},
 		sync_service.clone(),
 		pubsub_notification_sinks.clone(),
@@ -1622,6 +1796,7 @@ where
 					overrides: overrides.clone(),
 					fee_history_limit,
 					fee_history_cache: fee_history_cache.clone(),
+					state_pruning: config.state_pruning.clone(),
 				},
 			)
 		} else {
@@ -1714,7 +1889,7 @@ where
 
 	let _rpc_handlers = sc_service::spawn_tasks(sc_service::SpawnTasksParams {
 		network,
-		client,
+		client: client.clone(),
 		keystore: keystore_container.keystore(),
 		task_manager: &mut task_manager,
 		transaction_pool,
@@ -1725,6 +1900,7 @@ where
 		config,
 		tx_handler_controller,
 		telemetry: None,
+		tracing_execute_block: Some(Arc::new(ParachainTracingExecuteBlock::new(client.clone()))),
 	})?;
 
 	if let Some(hwbench) = hwbench {
@@ -1984,6 +2160,7 @@ mod tests {
 				rate_limit: Default::default(),
 				rate_limit_whitelisted_ips: vec![],
 				rate_limit_trust_proxy_headers: false,
+				request_logger_limit: 1024,
 			},
 			data_path: Default::default(),
 			prometheus_config: None,

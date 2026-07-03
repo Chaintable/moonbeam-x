@@ -8,8 +8,7 @@ import type {
   PalletReferendaDeposit,
   PalletConvictionVotingVoteVoting,
 } from "@polkadot/types/lookup";
-import { describeSuite, expect, beforeAll } from "@moonwall/cli";
-import { TWO_HOURS, printTokens } from "@moonwall/util";
+import { TWO_HOURS, beforeAll, describeSuite, expect, printTokens } from "moonwall";
 import type { StorageKey } from "@polkadot/types";
 import { extractPreimageDeposit, AccountShortfalls } from "../../helpers";
 import type { ApiPromise } from "@polkadot/api";
@@ -51,6 +50,12 @@ const base64ToHex = (base64: string): string => {
 type ReservedInfo = { total?: bigint; reserved?: { [key: string]: bigint } };
 type LocksInfo = { total?: bigint; locks?: { [key: string]: bigint } };
 type FreezesInfo = { total?: bigint; freezes?: { [key: string]: bigint } };
+type ReservedFailure = {
+  reservedBalance: bigint;
+  expected: bigint;
+  expectedReserve?: { [key: string]: bigint };
+  message: string;
+};
 
 async function getLocks(apiAt: ApiDecoration<"promise">): Promise<Map<string, { total: bigint }>> {
   const locksMap = new Map<string, { total: bigint }>();
@@ -101,12 +106,11 @@ describeSuite({
     let locksMap: Map<string, { total: bigint }>;
     let freezesMap: Map<string, { total: bigint }>;
     const failedLocks: any[] = [];
-    const failedReserved: any[] = [];
+    const failedReserved: ReservedFailure[] = [];
     const failedFreezes: any[] = [];
     let atBlockNumber = 0;
     let apiAt: ApiDecoration<"promise">;
     let specVersion = 0;
-    let runtimeName: string;
     let totalAccounts = 0n;
     let totalIssuance = 0n;
     let symbol: string;
@@ -189,15 +193,51 @@ describeSuite({
       return null;
     };
 
+    const isPureProxyDepositDeficit = (failure: ReservedFailure) => {
+      const expectedReserve = failure.expectedReserve || {};
+      const reserveTypes = Object.keys(expectedReserve);
+
+      return (
+        failure.expected > failure.reservedBalance &&
+        reserveTypes.length === 1 &&
+        expectedReserve[ReserveType.Proxy] === failure.expected
+      );
+    };
+
+    const isPureProxyDepositSurplus = (failure: ReservedFailure) => {
+      return failure.reservedBalance > failure.expected;
+    };
+
+    const sumPureProxyReserveDelta = (failures: ReservedFailure[]) => {
+      return failures.reduce(
+        (acc, failure) => {
+          if (isPureProxyDepositDeficit(failure)) {
+            acc.missingFromPureProxy += failure.expected - failure.reservedBalance;
+          } else if (isPureProxyDepositSurplus(failure)) {
+            acc.extraReservedOnSpawners += failure.reservedBalance - failure.expected;
+          } else {
+            acc.unaccountedFailures.push(failure);
+          }
+          return acc;
+        },
+        {
+          missingFromPureProxy: 0n,
+          extraReservedOnSpawners: 0n,
+          unaccountedFailures: [] as ReservedFailure[],
+        }
+      );
+    };
+
     beforeAll(async function () {
       paraApi = context.polkadotJs("para");
       const blockHash = process.env.BLOCK_NUMBER
-        ? (await paraApi.rpc.chain.getBlockHash(Number.parseInt(process.env.BLOCK_NUMBER))).toHex()
+        ? (
+            await paraApi.rpc.chain.getBlockHash(Number.parseInt(process.env.BLOCK_NUMBER, 10))
+          ).toHex()
         : (await paraApi.rpc.chain.getFinalizedHead()).toHex();
       atBlockNumber = (await paraApi.rpc.chain.getHeader(blockHash)).number.toNumber();
       apiAt = await paraApi.at(blockHash);
       specVersion = apiAt.consts.system.version.specVersion.toNumber();
-      runtimeName = apiAt.runtimeVersion.specName.toString();
       symbol = (await paraApi.rpc.system.properties()).tokenSymbol.unwrap()[0].toString();
 
       // 1a) Build Expected Results - Reserved Map
@@ -209,7 +249,7 @@ describeSuite({
           .entries()
           .then((proxies) => {
             proxies.forEach((proxy) => {
-              updateReserveMap(proxy[0].toHex().slice(-40), {
+              updateReserveMap(proxy[0].args[0].toHex(), {
                 [ReserveType.Proxy]: proxy[1][1].toBigInt(),
               });
             });
@@ -597,7 +637,12 @@ describeSuite({
               )
               .join(` - `) +
             `)`;
-          failedReserved.push(errorString);
+          failedReserved.push({
+            reservedBalance,
+            expected,
+            expectedReserve: expectedReserveMap.get(key)?.reserved,
+            message: errorString,
+          });
         }
         expectedReserveMap.delete(key);
       };
@@ -679,13 +724,40 @@ describeSuite({
       id: "C100",
       title: "should have matching deposit/reserved",
       test: async function () {
-        if (failedReserved.length > 0) {
+        const { missingFromPureProxy, extraReservedOnSpawners, unaccountedFailures } =
+          sumPureProxyReserveDelta(failedReserved);
+
+        if (missingFromPureProxy > 0n || extraReservedOnSpawners > 0n) {
+          log(
+            `Reconciling pure proxy deposits: missing ${printTokens(
+              paraApi,
+              missingFromPureProxy,
+              1,
+              5
+            )} ${symbol} from pure proxy accounts and found ${printTokens(
+              paraApi,
+              extraReservedOnSpawners,
+              1,
+              5
+            )} ${symbol} extra reserved on spawner accounts`
+          );
+        }
+
+        expect(
+          extraReservedOnSpawners,
+          `❌ Pure proxy deposit reserves do not balance: expected ${missingFromPureProxy} ` +
+            `but found ${extraReservedOnSpawners} reserved on spawner accounts`
+        ).to.equal(missingFromPureProxy);
+
+        if (unaccountedFailures.length > 0) {
           log("Failed accounts reserves");
         }
 
         expect(
-          failedReserved.length,
-          `❌ Mismatched account reserves: \n${failedReserved.join(",\n")}`
+          unaccountedFailures.length,
+          `❌ Mismatched account reserves: \n${unaccountedFailures
+            .map(({ message }) => message)
+            .join(",\n")}`
         ).to.equal(0);
 
         log(`Verified ${totalAccounts} total reserve balances (at #${atBlockNumber})`);
@@ -693,7 +765,7 @@ describeSuite({
         const failuresExpectedReserveMap: string[] = [];
         if (expectedReserveMap.size > 0) {
           log(`expectedReserveMap size: ${expectedReserveMap.size}`);
-          expectedReserveMap.forEach((value, key) => {
+          expectedReserveMap.forEach((_, key) => {
             failuresExpectedReserveMap.push(`${base64ToHex(key)}`);
           });
         }

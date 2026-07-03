@@ -30,6 +30,11 @@ use std::path::PathBuf;
 use std::time::Duration;
 use url::Url;
 
+const SUBSTRATE_DEFAULT_POOL_LIMIT: usize = 8192;
+const SUBSTRATE_DEFAULT_POOL_KBYTES: usize = 20480;
+const MOONBEAM_DEFAULT_POOL_LIMIT: usize = 1024;
+const MOONBEAM_DEFAULT_POOL_KBYTES: usize = 2560;
+
 #[cfg(feature = "lazy-loading")]
 fn parse_block_hash(s: &str) -> Result<sp_core::H256, String> {
 	use std::str::FromStr;
@@ -52,7 +57,7 @@ fn validate_url(arg: &str) -> Result<Url, String> {
 pub enum Subcommand {
 	/// Export the genesis state of the parachain.
 	#[clap(name = "export-genesis-state")]
-	ExportGenesisHead(ExportGenesisHeadCommand),
+	ExportGenesisHead(cumulus_client_cli::ExportGenesisHeadCommand),
 
 	/// Export the genesis wasm of the parachain.
 	#[clap(name = "export-genesis-wasm")]
@@ -84,9 +89,6 @@ pub enum Subcommand {
 	#[clap(subcommand)]
 	Benchmark(frame_benchmarking_cli::BenchmarkCmd),
 
-	/// Try some command against runtime state.
-	TryRuntime,
-
 	/// Key management cli utilities
 	#[clap(subcommand)]
 	Key(KeyCmd),
@@ -109,26 +111,6 @@ pub struct BuildSpecCommand {
 	/// Warning: This flag implies a development spec and overrides any explicitly supplied spec
 	#[clap(long, conflicts_with = "chain")]
 	pub mnemonic: Option<String>,
-}
-
-/// Command for exporting the genesis state of the parachain
-#[derive(Debug, Parser)]
-pub struct ExportGenesisHeadCommand {
-	/// Output file name or stdout if unspecified.
-	#[clap(value_parser)]
-	pub output: Option<PathBuf>,
-
-	/// Id of the parachain this state is for.
-	#[clap(long)]
-	pub parachain_id: Option<u32>,
-
-	/// Write output in binary. Default is to write in hex.
-	#[clap(short, long)]
-	pub raw: bool,
-
-	/// The name of the chain for that the genesis state should be exported.
-	#[clap(long)]
-	pub chain: Option<String>,
 }
 
 /// Command for exporting the genesis wasm file.
@@ -392,6 +374,20 @@ impl RunCmd {
 			},
 			no_prometheus_prefix: self.no_prometheus_prefix,
 		}
+	}
+
+	pub fn normalize_with_moonbeam_txpool_defaults(&self) -> cumulus_client_cli::NormalizedRunCmd {
+		let mut cmd = self.base.normalize();
+		let pool_config = &mut cmd.base.pool_config;
+
+		if pool_config.pool_limit == SUBSTRATE_DEFAULT_POOL_LIMIT {
+			pool_config.pool_limit = MOONBEAM_DEFAULT_POOL_LIMIT;
+		}
+		if pool_config.pool_kbytes == SUBSTRATE_DEFAULT_POOL_KBYTES {
+			pool_config.pool_kbytes = MOONBEAM_DEFAULT_POOL_KBYTES;
+		}
+
+		cmd
 	}
 }
 

@@ -40,6 +40,7 @@ import type {
   BpParachainsParaInfo,
   BpRuntimeBasicOperatingMode,
   BpXcmBridgeHubBridge,
+  CumulusPalletParachainSystemParachainInherentInboundMessageId,
   CumulusPalletParachainSystemRelayStateSnapshotMessagingStateSnapshot,
   CumulusPalletParachainSystemUnincludedSegmentAncestor,
   CumulusPalletParachainSystemUnincludedSegmentSegmentTracker,
@@ -51,6 +52,7 @@ import type {
   EthereumTransactionTransactionV3,
   FpRpcTransactionStatus,
   FrameSupportDispatchPerDispatchClassWeight,
+  FrameSupportTokensFungibleImbalance,
   FrameSupportTokensMiscIdAmountRuntimeFreezeReason,
   FrameSupportTokensMiscIdAmountRuntimeHoldReason,
   FrameSystemAccountInfo,
@@ -88,6 +90,7 @@ import type {
   PalletParachainStakingCandidateMetadata,
   PalletParachainStakingCollatorSnapshot,
   PalletParachainStakingDelayedPayout,
+  PalletParachainStakingDelegationRequestsDelegationAction,
   PalletParachainStakingDelegationRequestsScheduledRequest,
   PalletParachainStakingDelegations,
   PalletParachainStakingDelegator,
@@ -114,10 +117,10 @@ import type {
   PalletXcmTransactorRemoteTransactInfoWithMaxWeight,
   PalletXcmVersionMigrationStage,
   PolkadotCorePrimitivesOutboundHrmpMessage,
-  PolkadotPrimitivesV8AbridgedHostConfiguration,
-  PolkadotPrimitivesV8PersistedValidationData,
-  PolkadotPrimitivesV8UpgradeGoAhead,
-  PolkadotPrimitivesV8UpgradeRestriction,
+  PolkadotPrimitivesV9AbridgedHostConfiguration,
+  PolkadotPrimitivesV9PersistedValidationData,
+  PolkadotPrimitivesV9UpgradeGoAhead,
+  PolkadotPrimitivesV9UpgradeRestriction,
   SpRuntimeDigest,
   SpTrieStorageProof,
   SpWeightsWeightV2Weight,
@@ -134,6 +137,11 @@ export type __QueryableStorageEntry<ApiType extends ApiTypes> = QueryableStorage
 declare module "@polkadot/api-base/types/storage" {
   interface AugmentedQueries<ApiType extends ApiTypes> {
     asyncBacking: {
+      /**
+       * Relay parent offset enforced by the parachain-system inherent check.
+       **/
+      relayParentOffset: AugmentedQuery<ApiType, () => Observable<u32>, []> &
+        QueryableStorageEntry<ApiType, []>;
       /**
        * Current relay chain slot paired with a number of authored blocks.
        *
@@ -765,6 +773,19 @@ declare module "@polkadot/api-base/types/storage" {
       counterForAssetsById: AugmentedQuery<ApiType, () => Observable<u32>, []> &
         QueryableStorageEntry<ApiType, []>;
       /**
+       * Pending deposits for frozen assets, keyed by (asset_id, beneficiary).
+       * Deposits for the same (asset_id, beneficiary) accumulate via checked_add.
+       **/
+      pendingDeposits: AugmentedQuery<
+        ApiType,
+        (
+          arg1: u128 | AnyNumber | Uint8Array,
+          arg2: H160 | string | Uint8Array
+        ) => Observable<Option<U256>>,
+        [u128, H160]
+      > &
+        QueryableStorageEntry<ApiType, [u128, H160]>;
+      /**
        * Generic query
        **/
       [key: string]: QueryableStorageEntry<ApiType>;
@@ -1242,6 +1263,23 @@ declare module "@polkadot/api-base/types/storage" {
       > &
         QueryableStorageEntry<ApiType, [AccountId20]>;
       /**
+       * Summary of pending delegation actions for a (collator, delegator) pair.
+       *
+       * Stores `DelegationAction::Revoke(bond)` when a revocation is pending, or
+       * `DelegationAction::Decrease(total)` with the aggregated sum of all pending
+       * decrease amounts. Used during round transitions to adjust reward
+       * calculations without reading the full `DelegationScheduledRequests`.
+       **/
+      delegationScheduledRequestsSummaryMap: AugmentedQuery<
+        ApiType,
+        (
+          arg1: AccountId20 | string | Uint8Array,
+          arg2: AccountId20 | string | Uint8Array
+        ) => Observable<Option<PalletParachainStakingDelegationRequestsDelegationAction>>,
+        [AccountId20, AccountId20]
+      > &
+        QueryableStorageEntry<ApiType, [AccountId20, AccountId20]>;
+      /**
        * Get delegator state associated with an account if account is delegating else None
        **/
       delegatorState: AugmentedQuery<
@@ -1376,7 +1414,7 @@ declare module "@polkadot/api-base/types/storage" {
        **/
       hostConfiguration: AugmentedQuery<
         ApiType,
-        () => Observable<Option<PolkadotPrimitivesV8AbridgedHostConfiguration>>,
+        () => Observable<Option<PolkadotPrimitivesV9AbridgedHostConfiguration>>,
         []
       > &
         QueryableStorageEntry<ApiType, []>;
@@ -1393,8 +1431,6 @@ declare module "@polkadot/api-base/types/storage" {
         QueryableStorageEntry<ApiType, []>;
       /**
        * HRMP watermark that was set in a block.
-       *
-       * This will be cleared in `on_initialize` of each new block.
        **/
       hrmpWatermark: AugmentedQuery<ApiType, () => Observable<u32>, []> &
         QueryableStorageEntry<ApiType, []>;
@@ -1415,6 +1451,28 @@ declare module "@polkadot/api-base/types/storage" {
       lastHrmpMqcHeads: AugmentedQuery<ApiType, () => Observable<BTreeMap<u32, H256>>, []> &
         QueryableStorageEntry<ApiType, []>;
       /**
+       * The last processed downward message.
+       *
+       * We need to keep track of this to filter the messages that have been already processed.
+       **/
+      lastProcessedDownwardMessage: AugmentedQuery<
+        ApiType,
+        () => Observable<Option<CumulusPalletParachainSystemParachainInherentInboundMessageId>>,
+        []
+      > &
+        QueryableStorageEntry<ApiType, []>;
+      /**
+       * The last processed HRMP message.
+       *
+       * We need to keep track of this to filter the messages that have been already processed.
+       **/
+      lastProcessedHrmpMessage: AugmentedQuery<
+        ApiType,
+        () => Observable<Option<CumulusPalletParachainSystemParachainInherentInboundMessageId>>,
+        []
+      > &
+        QueryableStorageEntry<ApiType, []>;
+      /**
        * The relay chain block number associated with the last parachain block.
        *
        * This is updated in `on_finalize`.
@@ -1431,9 +1489,16 @@ declare module "@polkadot/api-base/types/storage" {
       newValidationCode: AugmentedQuery<ApiType, () => Observable<Option<Bytes>>, []> &
         QueryableStorageEntry<ApiType, []>;
       /**
-       * Upward messages that are still pending and not yet send to the relay chain.
+       * Upward messages that are still pending and not yet sent to the relay chain.
        **/
       pendingUpwardMessages: AugmentedQuery<ApiType, () => Observable<Vec<Bytes>>, []> &
+        QueryableStorageEntry<ApiType, []>;
+      /**
+       * Upward signals that are still pending and not yet sent to the relay chain.
+       *
+       * This will be cleared in `on_finalize` for each block.
+       **/
+      pendingUpwardSignals: AugmentedQuery<ApiType, () => Observable<Vec<Bytes>>, []> &
         QueryableStorageEntry<ApiType, []>;
       /**
        * In case of a scheduled upgrade, this storage field contains the validation code to be
@@ -1522,7 +1587,7 @@ declare module "@polkadot/api-base/types/storage" {
        **/
       upgradeGoAhead: AugmentedQuery<
         ApiType,
-        () => Observable<Option<PolkadotPrimitivesV8UpgradeGoAhead>>,
+        () => Observable<Option<PolkadotPrimitivesV9UpgradeGoAhead>>,
         []
       > &
         QueryableStorageEntry<ApiType, []>;
@@ -1537,7 +1602,7 @@ declare module "@polkadot/api-base/types/storage" {
        **/
       upgradeRestrictionSignal: AugmentedQuery<
         ApiType,
-        () => Observable<Option<PolkadotPrimitivesV8UpgradeRestriction>>,
+        () => Observable<Option<PolkadotPrimitivesV9UpgradeRestriction>>,
         []
       > &
         QueryableStorageEntry<ApiType, []>;
@@ -1549,18 +1614,18 @@ declare module "@polkadot/api-base/types/storage" {
       /**
        * Upward messages that were sent in a block.
        *
-       * This will be cleared in `on_initialize` of each new block.
+       * This will be cleared in `on_initialize` for each new block.
        **/
       upwardMessages: AugmentedQuery<ApiType, () => Observable<Vec<Bytes>>, []> &
         QueryableStorageEntry<ApiType, []>;
       /**
        * The [`PersistedValidationData`] set for this block.
-       * This value is expected to be set only once per block and it's never stored
-       * in the trie.
+       *
+       * This value is expected to be set only once by the [`Pallet::set_validation_data`] inherent.
        **/
       validationData: AugmentedQuery<
         ApiType,
-        () => Observable<Option<PolkadotPrimitivesV8PersistedValidationData>>,
+        () => Observable<Option<PolkadotPrimitivesV9PersistedValidationData>>,
         []
       > &
         QueryableStorageEntry<ApiType, []>;
@@ -2187,6 +2252,17 @@ declare module "@polkadot/api-base/types/storage" {
       > &
         QueryableStorageEntry<ApiType, []>;
       /**
+       * The `OnChargeTransaction` stores the withdrawn tx fee here.
+       *
+       * Use `withdraw_txfee` and `remaining_txfee` to access from outside the crate.
+       **/
+      txPaymentCredit: AugmentedQuery<
+        ApiType,
+        () => Observable<Option<FrameSupportTokensFungibleImbalance>>,
+        []
+      > &
+        QueryableStorageEntry<ApiType, []>;
+      /**
        * Generic query
        **/
       [key: string]: QueryableStorageEntry<ApiType>;
@@ -2394,18 +2470,6 @@ declare module "@polkadot/api-base/types/storage" {
       [key: string]: QueryableStorageEntry<ApiType>;
     };
     xcmTransactor: {
-      /**
-       * Stores the fee per second for an asset in its reserve chain. This allows us to convert
-       * from weight to fee
-       **/
-      destinationAssetFeePerSecond: AugmentedQuery<
-        ApiType,
-        (
-          arg: StagingXcmV5Location | { parents?: any; interior?: any } | string | Uint8Array
-        ) => Observable<Option<u128>>,
-        [StagingXcmV5Location]
-      > &
-        QueryableStorageEntry<ApiType, [StagingXcmV5Location]>;
       /**
        * Since we are using pallet-utility for account derivation (through AsDerivative),
        * we need to provide an index for the account derivation. This storage item stores the index

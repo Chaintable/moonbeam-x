@@ -190,6 +190,7 @@ impl pallet_evm::Config for Test {
 	type Runner = pallet_evm::runner::stack::Runner<Self>;
 	type ChainId = ChainId;
 	type BlockGasLimit = BlockGasLimit;
+	type TransactionGasLimit = ();
 	type OnChargeTransaction = ();
 	type FindAuthor = FindAuthorTruncated;
 	type BlockHashMapping = pallet_ethereum::EthereumBlockHashMapping<Self>;
@@ -205,12 +206,14 @@ impl pallet_evm::Config for Test {
 
 parameter_types! {
 	pub const PostBlockAndTxnHashes: PostLogContent = PostLogContent::BlockAndTxnHashes;
+	pub const AllowUnprotectedTxs: bool = false;
 }
 
 impl pallet_ethereum::Config for Test {
 	type StateRoot = IntermediateStateRoot<<Test as frame_system::Config>::Version>;
 	type PostLogContent = PostBlockAndTxnHashes;
 	type ExtraDataLength = ConstU32<30>;
+	type AllowUnprotectedTxs = AllowUnprotectedTxs;
 }
 
 parameter_types! {

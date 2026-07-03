@@ -1,7 +1,13 @@
 import "@moonbeam-network/api-augment";
-import { describeSuite, expect, beforeAll, fetchCompiledContract } from "@moonwall/cli";
+import {
+  ALITH_SESSION_ADDRESS,
+  PRECOMPILES,
+  beforeAll,
+  describeSuite,
+  expect,
+  fetchCompiledContract,
+} from "moonwall";
 import { type Contract, ethers, type InterfaceAbi, type WebSocketProvider } from "ethers";
-import { ALITH_SESSION_ADDRESS, PRECOMPILES } from "@moonwall/util";
 import { hexToU8a } from "@polkadot/util";
 import type { ApiPromise } from "@polkadot/api";
 
@@ -17,8 +23,7 @@ describeSuite({
     let paraApiVersion: number;
 
     function getStakingPalletChainApi() {
-      const chainType = context.polkadotJs("para").consts.system.version.specName.toString();
-      if (chainType === "moonbase") {
+      if (paraApiVersion < 4_001) {
         return relayApi;
       }
 

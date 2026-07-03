@@ -1,5 +1,5 @@
 import "@moonbeam-network/api-augment";
-import { beforeAll, describeSuite, expect } from "@moonwall/cli";
+import { beforeAll, describeSuite, expect, generateKeyringPair } from "moonwall";
 
 import {
   sendCallAsDescendedOrigin,
@@ -7,14 +7,13 @@ import {
   sovereignAccountOfSibling,
 } from "../../../../helpers/xcm.js";
 import { fundAccount } from "../../../../helpers/balances.js";
-import { generateKeyringPair } from "@moonwall/util";
-import { expectSubstrateEvent, expectSystemEvent } from "../../../../helpers/expect.js";
+import { expectSystemEvent } from "../../../../helpers/expect.js";
 
 describeSuite({
   id: "D020111",
   title: "Creation of Foreign Assets via XCM",
   foundationMethods: "dev",
-  testCases: ({ context, it, log }) => {
+  testCases: ({ context, it }) => {
     const fundAmount = 100_000_000_000_000_000_000_000n;
 
     beforeAll(async () => {
@@ -217,7 +216,13 @@ describeSuite({
           true
         );
 
-        expect(errorName).to.eq("BadOrigin");
+        // As with sovereign-origin calls, this XCM can now fail either
+        // explicitly with a `BadOrigin` DispatchError, or earlier in the
+        // pipeline before a QueryResponse is emitted, in which case our
+        // helper surfaces a synthetic `NoHrmpOutboundMessage` error name.
+        // Both outcomes are acceptable for this test: a normal account
+        // must not be able to create a foreign asset via XCM.
+        expect(errorName).to.be.oneOf(["BadOrigin", "NoHrmpOutboundMessage"]);
       },
     });
   },

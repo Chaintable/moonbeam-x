@@ -56,7 +56,7 @@ use frame_support::{
 		OnUnbalanced, VariantCountOf,
 	},
 	weights::{
-		constants::WEIGHT_REF_TIME_PER_SECOND, ConstantMultiplier, Weight, WeightToFeeCoefficient,
+		constants::WEIGHT_REF_TIME_PER_SECOND, Weight, WeightToFeeCoefficient,
 		WeightToFeeCoefficients, WeightToFeePolynomial,
 	},
 	PalletId,
@@ -68,7 +68,13 @@ pub use moonbeam_core_primitives::{
 };
 use moonbeam_rpc_primitives_txpool::TxPoolResponse;
 use moonbeam_runtime_common::{
-	impl_asset_conversion::AssetRateConverter, impl_multiasset_paymaster::MultiAssetPaymaster,
+	deal_with_fees::{
+		DealWithEthereumBaseFees, DealWithEthereumPriorityFees, DealWithSubstrateFeesAndTip,
+		ProofSizeToFee, RefTimeToFee, WeightToFee,
+	},
+	impl_asset_conversion::AssetRateConverter,
+	impl_multiasset_paymaster::MultiAssetPaymaster,
+	TX_MAX_GAS_LIMIT,
 };
 pub use pallet_author_slot_filter::EligibilityValue;
 use pallet_ethereum::Call::transact;
@@ -210,7 +216,7 @@ pub const VERSION: RuntimeVersion = RuntimeVersion {
 	spec_name: Cow::Borrowed("moonbeam"),
 	impl_name: Cow::Borrowed("moonbeam"),
 	authoring_version: 3,
-	spec_version: 4100,
+	spec_version: 4400,
 	impl_version: 0,
 	apis: RUNTIME_API_VERSIONS,
 	transaction_version: 3,
@@ -386,7 +392,14 @@ impl pallet_transaction_payment::Config for Runtime {
 		>,
 	>;
 	type OperationalFeeMultiplier = ConstU8<5>;
-	type WeightToFee = ConstantMultiplier<Balance, ConstU128<{ currency::WEIGHT_FEE }>>;
+	type WeightToFee = WeightToFee<
+		RefTimeToFee<ConstU128<{ currency::WEIGHT_FEE }>>,
+		ProofSizeToFee<
+			ConstU128<
+				{ currency::WEIGHT_FEE.saturating_mul(GasLimitPovSizeRatio::get() as Balance) },
+			>,
+		>,
+	>;
 	type LengthToFee = LengthToFee;
 	type FeeMultiplierUpdate = SlowAdjustingFeeUpdate<Runtime>;
 	type WeightInfo = weights::pallet_transaction_payment::WeightInfo<Runtime>;
@@ -412,6 +425,7 @@ pub const BLOCK_STORAGE_LIMIT: u64 = 160 * 1024;
 parameter_types! {
 	pub BlockGasLimit: U256
 		= U256::from(NORMAL_DISPATCH_RATIO * MAXIMUM_BLOCK_WEIGHT.ref_time() / WEIGHT_PER_GAS);
+	pub TransactionGasLimit: Option<U256> = Some(U256::from(TX_MAX_GAS_LIMIT));
 	/// The portion of the `NORMAL_DISPATCH_RATIO` that we adjust the fees with. Blocks filled less
 	/// than this will decrease the weight and more will increase.
 	pub const TargetBlockFullness: Perquintill = Perquintill::from_percent(35);
@@ -525,6 +539,7 @@ impl pallet_evm::Config for Runtime {
 		DealWithEthereumPriorityFees<Runtime>,
 	>;
 	type BlockGasLimit = BlockGasLimit;
+	type TransactionGasLimit = TransactionGasLimit;
 	type FindAuthor = FindAuthorAdapter<AuthorInherent>;
 	type OnCreate = ();
 	type GasLimitPovSizeRatio = GasLimitPovSizeRatio;
@@ -679,12 +694,14 @@ impl fp_rpc::ConvertTransaction<opaque::UncheckedExtrinsic> for TransactionConve
 
 parameter_types! {
 	pub const PostBlockAndTxnHashes: PostLogContent = PostLogContent::BlockAndTxnHashes;
+	pub const AllowUnprotectedTxs: bool = false;
 }
 
 impl pallet_ethereum::Config for Runtime {
 	type StateRoot = pallet_ethereum::IntermediateStateRoot<Self::Version>;
 	type PostLogContent = PostBlockAndTxnHashes;
 	type ExtraDataLength = ConstU32<30>;
+	type AllowUnprotectedTxs = AllowUnprotectedTxs;
 }
 
 /// Relay chain slot duration, in milliseconds.
@@ -692,8 +709,6 @@ const RELAY_CHAIN_SLOT_DURATION_MILLIS: u32 = 6000;
 /// Maximum number of blocks simultaneously accepted by the Runtime, not yet included
 /// into the relay chain.
 const UNINCLUDED_SEGMENT_CAPACITY: u32 = 3;
-/// Build with an offset of 1 behind the relay chain.
-const RELAY_PARENT_OFFSET: u32 = 1;
 /// How many parachain blocks are processed by the relay chain per parent. Limits the
 /// number of blocks authored per slot.
 const BLOCK_PROCESSING_VELOCITY: u32 = 1;
@@ -717,8 +732,7 @@ impl cumulus_pallet_parachain_system::Config for Runtime {
 	type ConsensusHook = ConsensusHook;
 	type DmpQueue = frame_support::traits::EnqueueWithOrigin<MessageQueue, RelayOrigin>;
 	type WeightInfo = moonbeam_weights::cumulus_pallet_parachain_system::WeightInfo<Runtime>;
-	type SelectCore = cumulus_pallet_parachain_system::DefaultCoreSelector<Runtime>;
-	type RelayParentOffset = ConstU32<0>;
+	type RelayParentOffset = AsyncBacking;
 }
 
 pub struct EthereumXcmEnsureProxy;
@@ -808,6 +822,10 @@ impl pallet_parachain_staking::OnInactiveCollator<Runtime> for OnInactiveCollato
 }
 type MonetaryGovernanceOrigin =
 	EitherOfDiverse<EnsureRoot<AccountId>, governance::custom_origins::GeneralAdmin>;
+type RuntimeParametersAdminOrigin = EitherOfDiverse<
+	EnsureRoot<AccountId>,
+	pallet_collective::EnsureProportionAtLeast<AccountId, OpenTechCommitteeInstance, 5, 9>,
+>;
 
 pub struct RelayChainSlotProvider;
 impl Get<Slot> for RelayChainSlotProvider {
@@ -1379,7 +1397,7 @@ impl pallet_precompile_benchmarks::Config for Runtime {
 }
 
 impl pallet_parameters::Config for Runtime {
-	type AdminOrigin = EnsureRoot<AccountId>;
+	type AdminOrigin = RuntimeParametersAdminOrigin;
 	type RuntimeEvent = RuntimeEvent;
 	type RuntimeParameters = RuntimeParameters;
 	type WeightInfo = moonbeam_weights::pallet_parameters::WeightInfo<Runtime>;
@@ -1516,10 +1534,6 @@ bridge_runtime_common::generate_bridge_reject_obsolete_headers_and_messages! {
 
 #[cfg(feature = "runtime-benchmarks")]
 use moonbeam_runtime_common::benchmarking::BenchmarkHelper;
-use moonbeam_runtime_common::deal_with_fees::{
-	DealWithEthereumBaseFees, DealWithEthereumPriorityFees, DealWithSubstrateFeesAndTip,
-};
-
 #[cfg(feature = "runtime-benchmarks")]
 mod benches {
 	frame_support::parameter_types! {
@@ -1569,6 +1583,8 @@ mod benches {
 		[pallet_bridge_parachains, pallet_bridge_parachains::benchmarking::Pallet::<Runtime, bridge_config::BridgeMoonriverInstance>]
 		[pallet_bridge_messages, pallet_bridge_messages::benchmarking::Pallet::<Runtime, bridge_config::WithKusamaMessagesInstance>]
 		[cumulus_pallet_weight_reclaim, WeightReclaim]
+		[pallet_xcm_benchmarks::fungible, pallet_xcm_benchmarks::fungible::Pallet<Runtime>]
+		[pallet_xcm_benchmarks::generic, pallet_xcm_benchmarks::generic::Pallet<Runtime>]
 	);
 }
 

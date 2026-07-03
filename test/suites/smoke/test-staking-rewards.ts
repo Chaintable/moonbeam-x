@@ -12,8 +12,16 @@ import type {
   PalletParachainStakingRoundInfo,
 } from "@polkadot/types/lookup";
 import type { ApiDecoration } from "@polkadot/api/types";
-import { describeSuite, expect, beforeAll } from "@moonwall/cli";
-import { FIVE_MINS, ONE_HOURS, Perbill, Percent, TEN_MINS } from "@moonwall/util";
+import {
+  FIVE_MINS,
+  ONE_HOURS,
+  Perbill,
+  Percent,
+  TEN_MINS,
+  beforeAll,
+  describeSuite,
+  expect,
+} from "moonwall";
 import { rateLimiter, getPreviousRound, getNextRound } from "../../helpers";
 import type { AccountId20, Block } from "@polkadot/types/interfaces";
 
@@ -45,9 +53,11 @@ describeSuite({
     let apiAt: ApiDecoration<"promise">;
     let predecessorApiAt: ApiDecoration<"promise">;
     let paraApi: ApiPromise;
+    let specVersion: number;
 
     beforeAll(async () => {
       paraApi = context.polkadotJs("para");
+      specVersion = paraApi.runtimeVersion.specVersion.toNumber();
 
       const atBlockNumber = process.env.BLOCK_NUMBER
         ? Number.parseInt(process.env.BLOCK_NUMBER)
@@ -103,7 +113,7 @@ describeSuite({
       test: async () => {
         const results = await limiter.schedule(() => {
           const specVersion = paraApi.consts.system.version.specVersion.toNumber();
-          const allTasks = atStakeSnapshot.map(async (coll, index) => {
+          const allTasks = atStakeSnapshot.map(async (coll) => {
             const [
               {
                 args: [_, accountId],
@@ -173,7 +183,7 @@ describeSuite({
           )!.amount;
 
           // Querying for pending withdrawals which affect the total
-          const scheduledRequest = scheduledRequests.find((a) => {
+          const scheduledRequest = scheduledRequests.find((a: any) => {
             return a.delegator.toString() === delegatorSnapshot.owner.toString();
           });
 
@@ -211,13 +221,13 @@ describeSuite({
             {
               args: [_, accountId],
             },
-            { bond, total, delegations },
+            { delegations },
           ] = coll;
-          const scheduledRequests = await limiter.schedule(() =>
+          const scheduledRequests = (await limiter.schedule(() =>
             predecessorApiAt.query.parachainStaking.delegationScheduledRequests(
               accountId as AccountId20
             )
-          );
+          )) as unknown as PalletParachainStakingDelegationRequestsScheduledRequest[];
 
           return Promise.all(
             delegations.map((delegation) =>
@@ -737,18 +747,24 @@ describeSuite({
             acc,
             [
               {
-                args: [candidateId],
+                args: [candidateId, delegator],
               },
-              scheduledRequests,
+              rawScheduledRequests,
             ]
           ) => {
+            const scheduledRequests =
+              rawScheduledRequests as unknown as PalletParachainStakingDelegationRequestsScheduledRequest[];
             if (!(candidateId.toHex() in acc)) {
               acc[candidateId.toHex()] = new Set();
             }
             scheduledRequests
-              .filter((req) => req.action.isRevoke)
-              .forEach((req) => {
-                acc[candidateId.toHex()].add(req.delegator.toHex());
+              .filter((req: any) => req.action.isRevoke)
+              .forEach((req: any) => {
+                if (specVersion >= 4_100) {
+                  acc[candidateId.toHex()].add(delegator.toHex());
+                } else {
+                  acc[candidateId.toHex()].add(req.delegator.toHex());
+                }
               });
             return acc;
           },
@@ -1031,7 +1047,7 @@ describeSuite({
           // collator is always paid first so this is guaranteed to execute first
           collatorInfo = stakedValue[accountId];
 
-          const pointsShare = new Perbill(collatorInfo.points, totalPoints);
+          const pointsShare = new Perbill(collatorInfo.points, totalPoints.toNumber());
           const collatorReward = pointsShare.of(totalStakingReward);
           rewarded.collatorSharePerbill = pointsShare.value();
           const collatorCommissionReward = pointsShare.of(totalCollatorCommissionReward);

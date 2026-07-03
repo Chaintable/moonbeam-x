@@ -4,13 +4,7 @@
   "chainType": "Live",
   "bootNodes": [
     "/dns4/fro-moonbase-relay-boot-1.moonbase.ol-infra.network/tcp/30334/p2p/12D3KooWJHEah35MCoUWzVnDDK6sBYHahrcSGaKkpt6qeQoUYM9o",
-    "/dns4/qcl-moonbase-relay-boot-2.moonbase.ol-infra.network/tcp/30334/p2p/12D3KooWGo3UbxeropDcVaWKYXmeGC5wzLG9ZPip7CyN997cFChk",
-    "/dns/eu-02.unitedbloc.com/tcp/35060/p2p/12D3KooWG8KzsySP5pEoG5oh1MzjYJhq7QZRbNHKZiGWF7FNQHuk",
-    "/dns/eu-03.unitedbloc.com/tcp/37060/p2p/12D3KooWGkQhFJZAVYhDi5bp3hUm3QouwGmYugvqNLuS77TKyNZd",
-    "/dns/eu-01.unitedbloc.com/tcp/35060/p2p/12D3KooWAu26xXQy9Q8P9rXim3yAGkAZ38BS3xrF2J7uZUbz1A8n",
-    "/dns/apac-01.unitedbloc.com/tcp/35060/p2p/12D3KooWH1zRsVBRtTNiEbKHSees6ESw7UPFJBws3StgXcqTUQDt",
-    "/dns/sa-01.unitedbloc.com/tcp/35060/p2p/12D3KooWKbo2qnyNdea2uR55z7dfg1BVDJw15Xr9xkUHd1csQnG2",
-    "/dns/na-01a.unitedbloc.com/tcp/30333/p2p/12D3KooWEe1hn1YMxqzhacCDYrQVrNHyP8MXZSSjHkTwnGmKXRhh"
+    "/dns4/qcl-moonbase-relay-boot-2.moonbase.ol-infra.network/tcp/30334/p2p/12D3KooWGo3UbxeropDcVaWKYXmeGC5wzLG9ZPip7CyN997cFChk"
   ],
   "telemetryEndpoints": null,
   "protocolId": "moonbase-alpha-relay",

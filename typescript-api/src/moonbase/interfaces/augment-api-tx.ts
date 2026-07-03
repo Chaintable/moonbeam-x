@@ -38,8 +38,9 @@ import type {
 } from "@polkadot/types/interfaces/runtime";
 import type {
   AccountEthereumSignature,
+  CumulusPalletParachainSystemParachainInherentBasicParachainInherentData,
+  CumulusPalletParachainSystemParachainInherentInboundMessagesData,
   CumulusPrimitivesCoreAggregateMessageOrigin,
-  CumulusPrimitivesParachainInherentParachainInherentData,
   EthereumTransactionEip7702AuthorizationListItem,
   EthereumTransactionTransactionV3,
   FrameSupportPreimagesBounded,
@@ -509,6 +510,7 @@ declare module "@polkadot/api-base/types/submittable" {
             | { Ed25519: any }
             | { Sr25519: any }
             | { Ecdsa: any }
+            | { Eth: any }
             | string
             | Uint8Array
         ) => SubmittableExtrinsic<ApiType>,
@@ -534,6 +536,7 @@ declare module "@polkadot/api-base/types/submittable" {
                   | { Ed25519: any }
                   | { Sr25519: any }
                   | { Ecdsa: any }
+                  | { Eth: any }
                   | string
                   | Uint8Array
                 )
@@ -811,6 +814,18 @@ declare module "@polkadot/api-base/types/submittable" {
             | Uint8Array
         ) => SubmittableExtrinsic<ApiType>,
         [u128, StagingXcmV5Location]
+      >;
+      /**
+       * Claim a pending deposit for a given asset and beneficiary.
+       * Callable by any signed origin (permissionless). Tokens are minted to the
+       * beneficiary, not the caller. Requires the asset to be active (unfrozen).
+       **/
+      claimPendingDeposit: AugmentedSubmittable<
+        (
+          assetId: u128 | AnyNumber | Uint8Array,
+          beneficiary: H160 | string | Uint8Array
+        ) => SubmittableExtrinsic<ApiType>,
+        [u128, H160]
       >;
       /**
        * Create new asset with the ForeignAssetCreator
@@ -2125,19 +2140,25 @@ declare module "@polkadot/api-base/types/submittable" {
       setValidationData: AugmentedSubmittable<
         (
           data:
-            | CumulusPrimitivesParachainInherentParachainInherentData
+            | CumulusPalletParachainSystemParachainInherentBasicParachainInherentData
             | {
                 validationData?: any;
                 relayChainState?: any;
-                downwardMessages?: any;
-                horizontalMessages?: any;
                 relayParentDescendants?: any;
                 collatorPeerId?: any;
               }
             | string
+            | Uint8Array,
+          inboundMessagesData:
+            | CumulusPalletParachainSystemParachainInherentInboundMessagesData
+            | { downwardMessages?: any; horizontalMessages?: any }
+            | string
             | Uint8Array
         ) => SubmittableExtrinsic<ApiType>,
-        [CumulusPrimitivesParachainInherentParachainInherentData]
+        [
+          CumulusPalletParachainSystemParachainInherentBasicParachainInherentData,
+          CumulusPalletParachainSystemParachainInherentInboundMessagesData
+        ]
       >;
       sudoSendUpwardMessage: AugmentedSubmittable<
         (message: Bytes | string | Uint8Array) => SubmittableExtrinsic<ApiType>,
@@ -2924,16 +2945,16 @@ declare module "@polkadot/api-base/types/submittable" {
        * inaccessible.
        *
        * Requires a `Signed` origin, and the sender account must have been created by a call to
-       * `pure` with corresponding parameters.
+       * `create_pure` with corresponding parameters.
        *
-       * - `spawner`: The account that originally called `pure` to create this account.
+       * - `spawner`: The account that originally called `create_pure` to create this account.
        * - `index`: The disambiguation index originally passed to `create_pure`. Probably `0`.
-       * - `proxy_type`: The proxy type originally passed to `pure`.
-       * - `height`: The height of the chain when the call to `pure` was processed.
-       * - `ext_index`: The extrinsic index in which the call to `pure` was processed.
+       * - `proxy_type`: The proxy type originally passed to `create_pure`.
+       * - `height`: The height of the chain when the call to `create_pure` was processed.
+       * - `ext_index`: The extrinsic index in which the call to `create_pure` was processed.
        *
        * Fails with `NoPermission` in case the caller is not a previously created pure
-       * account whose `pure` call has corresponding parameters.
+       * account whose `create_pure` call has corresponding parameters.
        **/
       killPure: AugmentedSubmittable<
         (
@@ -3077,7 +3098,7 @@ declare module "@polkadot/api-base/types/submittable" {
        *
        * The dispatch origin for this call must be _Signed_.
        *
-       * WARNING: This may be called on accounts created by `pure`, however if done, then
+       * WARNING: This may be called on accounts created by `create_pure`, however if done, then
        * the unreserved fees will be inaccessible. **All access to this account will be lost.**
        **/
       removeProxies: AugmentedSubmittable<() => SubmittableExtrinsic<ApiType>, []>;
@@ -4339,21 +4360,6 @@ declare module "@polkadot/api-base/types/submittable" {
         [AccountId20, u16]
       >;
       /**
-       * Remove the fee per second of an asset on its reserve chain
-       **/
-      removeFeePerSecond: AugmentedSubmittable<
-        (
-          assetLocation:
-            | XcmVersionedLocation
-            | { V3: any }
-            | { V4: any }
-            | { V5: any }
-            | string
-            | Uint8Array
-        ) => SubmittableExtrinsic<ApiType>,
-        [XcmVersionedLocation]
-      >;
-      /**
        * Remove the transact info of a location
        **/
       removeTransactInfo: AugmentedSubmittable<
@@ -4367,22 +4373,6 @@ declare module "@polkadot/api-base/types/submittable" {
             | Uint8Array
         ) => SubmittableExtrinsic<ApiType>,
         [XcmVersionedLocation]
-      >;
-      /**
-       * Set the fee per second of an asset on its reserve chain
-       **/
-      setFeePerSecond: AugmentedSubmittable<
-        (
-          assetLocation:
-            | XcmVersionedLocation
-            | { V3: any }
-            | { V4: any }
-            | { V5: any }
-            | string
-            | Uint8Array,
-          feePerSecond: u128 | AnyNumber | Uint8Array
-        ) => SubmittableExtrinsic<ApiType>,
-        [XcmVersionedLocation, u128]
       >;
       /**
        * Change the transact info of a location
@@ -4455,7 +4445,7 @@ declare module "@polkadot/api-base/types/submittable" {
         ]
       >;
       /**
-       * Transact the call through the a signed origin in this chain
+       * Transact the call through a signed origin in this chain
        * that should be converted to a transaction dispatch account in the destination chain
        * by any method implemented in the destination chains runtime
        *

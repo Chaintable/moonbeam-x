@@ -1,8 +1,7 @@
 import "@moonbeam-network/api-augment";
-import { beforeAll, describeSuite, expect, deployCreateCompiledContract } from "@moonwall/cli";
-import { sendRawTransaction } from "@moonwall/util";
+import { beforeAll, deployCreateCompiledContract, describeSuite, expect } from "moonwall";
 import { encodeFunctionData, decodeFunctionResult, type Abi, parseEther } from "viem";
-import { createFundedAccount, createViemTransaction } from "./helpers";
+import { createFundedAccount, createViemTransaction, sendRawTransaction } from "./helpers";
 import { getTransactionReceiptWithRetry } from "../../../../helpers/eth-transactions";
 
 describeSuite({
@@ -23,9 +22,6 @@ describeSuite({
     let chainId: number;
 
     // Precompile addresses
-    const ecrecoverPrecompile = "0x0000000000000000000000000000000000000001";
-    const sha256Precompile = "0x0000000000000000000000000000000000000002";
-    const ripemd160Precompile = "0x0000000000000000000000000000000000000003";
     const identityPrecompile = "0x0000000000000000000000000000000000000004";
 
     beforeAll(async () => {
@@ -175,12 +171,12 @@ describeSuite({
         expect(receipt.status).toBe("success");
 
         // Test ADDRESS opcode - should return pointer's address
-        const address = await context.viem().readContract({
+        const address = (await context.viem().readContract({
           address: pointer.address,
           abi: contextCheckerAbi,
           functionName: "getAddress",
           args: [],
-        });
+        })) as string;
         expect(address.toLowerCase()).toBe(pointer.address.toLowerCase());
 
         // Test BALANCE opcode - should return pointer's balance
@@ -542,12 +538,12 @@ describeSuite({
         expect(receipt.status).toBe("success");
 
         // Check which delegation is active - should be contextChecker (last one)
-        const address = await context.viem().readContract({
+        const address = (await context.viem().readContract({
           address: doubleAuth.address,
           abi: contextCheckerAbi,
           functionName: "getAddress",
           args: [],
-        });
+        })) as string;
 
         expect(address.toLowerCase()).toBe(doubleAuth.address.toLowerCase());
         console.log("Last authorization (contextChecker) is active");

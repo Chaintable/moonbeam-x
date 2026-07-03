@@ -1,21 +1,28 @@
 import "@moonbeam-network/api-augment";
 import {
+  ALITH_ADDRESS,
+  PRECOMPILE_BATCH_ADDRESS,
+  beforeAll,
+  createEthersTransaction,
+  deployCreateCompiledContract,
   describeSuite,
   expect,
-  beforeAll,
-  deployCreateCompiledContract,
   fetchCompiledContract,
-} from "@moonwall/cli";
-import { type HeavyContract, deployHeavyContracts, expectEVMResult } from "../../../../helpers";
+} from "moonwall";
+import {
+  type HeavyContract,
+  deployHeavyContracts,
+  expectEVMResult,
+  EIP_7825_MAX_TRANSACTION_GAS_LIMIT,
+} from "../../../../helpers";
 
 import { type Abi, encodeFunctionData } from "viem";
-import { ALITH_ADDRESS, PRECOMPILE_BATCH_ADDRESS, createEthersTransaction } from "@moonwall/util";
 
 describeSuite({
   id: "D022604",
   title: "PoV precompile test - gasLimit",
   foundationMethods: "dev",
-  testCases: ({ context, log, it }) => {
+  testCases: ({ context, it }) => {
     let contracts: HeavyContract[];
     const MAX_CONTRACTS = 50;
     const EXPECTED_POV_ROUGH = 55_000; // bytes
@@ -108,10 +115,11 @@ describeSuite({
       id: "T03",
       title: "should allow to call a precompile tx with enough gas limit to cover PoV",
       test: async function () {
+        // Use EIP-7825 max transaction gas limit (16.8M) instead of 24M
         const rawSigned = await createEthersTransaction(context, {
           to: PRECOMPILE_BATCH_ADDRESS,
           data: callData,
-          gasLimit: 24_000_000,
+          gasLimit: Number(EIP_7825_MAX_TRANSACTION_GAS_LIMIT),
           txnType: "eip1559",
         });
 

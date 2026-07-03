@@ -22,7 +22,10 @@ use crate::{
 	RELAY_CHAIN_SLOT_DURATION_MILLIS, SOFT_DEADLINE_PERCENT, TIMESTAMP,
 };
 use cumulus_client_parachain_inherent::{MockValidationDataInherentDataProvider, MockXcmConfig};
-use cumulus_primitives_core::{relay_chain, BlockT, CollectCollationInfo, ParaId};
+use cumulus_client_service::ParachainTracingExecuteBlock;
+use cumulus_primitives_core::{
+	relay_chain, BlockT, CollectCollationInfo, ParaId, RelayParentOffsetApi,
+};
 use fc_rpc::StorageOverrideHandler;
 use fc_rpc_core::types::{FeeHistoryCache, FilterPool};
 use frontier_backend::LazyLoadingFrontierBackend;
@@ -357,7 +360,8 @@ pub async fn new_lazy_loading_service<RuntimeApi, Customizations, Net>(
 ) -> Result<TaskManager, ServiceError>
 where
 	RuntimeApi: ConstructRuntimeApi<Block, LazyLoadingClient<RuntimeApi>> + Send + Sync + 'static,
-	RuntimeApi::RuntimeApi: RuntimeApiCollection,
+	RuntimeApi::RuntimeApi:
+		RuntimeApiCollection + cumulus_primitives_core::RelayParentOffsetApi<Block>,
 	Customizations: ClientCustomizations + 'static,
 	Net: NetworkBackend<Block, Hash>,
 {
@@ -486,7 +490,7 @@ where
 		let mut env = sc_basic_authorship::ProposerFactory::with_proof_recording(
 			task_manager.spawn_handle(),
 			client.clone(),
-			transaction_pool.clone(),
+			crate::limited_transaction_pool(client.clone(), transaction_pool.clone()),
 			prometheus_registry.as_ref(),
 			telemetry.as_ref().map(|x| x.handle()),
 		);
@@ -653,6 +657,9 @@ where
 							}
 						};
 
+						let relay_parent_offset =
+							client_for_xcm.runtime_api().relay_parent_offset(block)?;
+
 						let mocked_parachain = MockValidationDataInherentDataProvider {
 							current_para_block,
 							para_id: parachain_id,
@@ -663,7 +670,8 @@ where
 								UpgradeGoAhead::GoAhead
 							}),
 							current_para_block_head,
-							relay_offset: additional_relay_offset.load(Ordering::SeqCst),
+							relay_offset: relay_parent_offset
+								.saturating_add(additional_relay_offset.load(Ordering::SeqCst)),
 							relay_blocks_per_para_block: 1,
 							para_blocks_per_relay_epoch: 10,
 							relay_randomness_config: (),
@@ -701,23 +709,6 @@ where
 	> = Default::default();
 	let pubsub_notification_sinks = Arc::new(pubsub_notification_sinks);
 
-	/* TODO: only enable this when frontier backend is compatible with lazy-loading
-	rpc::spawn_essential_tasks(
-		rpc::SpawnTasksParams {
-			task_manager: &task_manager,
-			client: client.clone(),
-			substrate_backend: backend.clone(),
-			frontier_backend: frontier_backend.clone(),
-			filter_pool: filter_pool.clone(),
-			overrides: overrides.clone(),
-			fee_history_limit,
-			fee_history_cache: fee_history_cache.clone(),
-		},
-		sync_service.clone(),
-		pubsub_notification_sinks.clone(),
-	);
-	*/
-
 	let ethapi_cmd = rpc_config.ethapi.clone();
 	let tracing_requesters =
 		if ethapi_cmd.contains(&EthApiCmd::Debug) || ethapi_cmd.contains(&EthApiCmd::Trace) {
@@ -733,6 +724,7 @@ where
 					overrides: overrides.clone(),
 					fee_history_limit,
 					fee_history_cache: fee_history_cache.clone(),
+					state_pruning: config.state_pruning.clone(),
 				},
 			)
 		} else {
@@ -829,7 +821,7 @@ where
 
 	let _rpc_handlers = sc_service::spawn_tasks(sc_service::SpawnTasksParams {
 		network,
-		client,
+		client: client.clone(),
 		keystore: keystore_container.keystore(),
 		task_manager: &mut task_manager,
 		transaction_pool,
@@ -840,6 +832,7 @@ where
 		config,
 		tx_handler_controller,
 		telemetry: None,
+		tracing_execute_block: Some(Arc::new(ParachainTracingExecuteBlock::new(client.clone()))),
 	})?;
 
 	if let Some(hwbench) = hwbench {

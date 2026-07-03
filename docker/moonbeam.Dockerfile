@@ -8,7 +8,7 @@ WORKDIR /moonbeam/
 
 RUN echo "*** Installing Basic dependencies ***"
 RUN apt-get update && apt-get install -y ca-certificates && update-ca-certificates
-RUN apt install --assume-yes git clang curl openssl libssl-dev llvm libudev-dev make protobuf-compiler pkg-config
+RUN apt install --assume-yes git clang curl openssl libssl-dev llvm libudev-dev make protobuf-compiler pkg-config libclang-dev
 
 COPY . .
 
